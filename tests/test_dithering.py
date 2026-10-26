@@ -33,7 +33,7 @@ class TestDitherAPI:
 
 
 # ---------------------------------------------------------------------------
-# 1bpp ordered dithering (bitmap mode — what the HL-4150CDN uses)
+# 1bpp ordered dithering (bitmap mode, Normal resolution)
 # ---------------------------------------------------------------------------
 
 
@@ -238,17 +238,18 @@ class TestBRCDTables:
         from dither import dither_channel_1bpp, dither_load_brcd
 
         lut_base = Path(__file__).resolve().parent.parent / "src" / "lut"
-        k_path = str(lut_base / "0600-k_cache09.bin")
+        k_path = str(lut_base / "0600-k_cache08.bin")
         if not Path(k_path).exists():
             pytest.skip("Original BRCD files not available")
         ch = dither_load_brcd(k_path)
-        assert ch.width == 32
-        assert ch.height == 32
+        # The HL-3040CN K screen is 80x80.
+        assert ch.width == 80
+        assert ch.height == 80
         assert ch.threshold_matrix is not None
-        assert ch.threshold_matrix.shape == (32, 32)
+        assert ch.threshold_matrix.shape == (80, 80)
         # ink=0 (white) places no dots, full ink (black) fills every position.
-        assert dither_channel_1bpp(bytes([255] * 32), 0, 32, ch) == bytes(4)
-        assert dither_channel_1bpp(bytes(32), 0, 32, ch) == b"\xff" * 4
+        assert dither_channel_1bpp(bytes([255] * 80), 0, 80, ch) == bytes(10)
+        assert dither_channel_1bpp(bytes(80), 0, 80, ch) == b"\xff" * 10
 
     def test_bayer_fallback(self):
         """Bayer matrix fallback produces valid dither tables."""
@@ -279,120 +280,79 @@ class TestCaptureVerification:
     our dithering output given the same PPM input.
     """
 
-    def test_fullwidth_k_dither_matches(self, all_captures):
-        """Dithered K-plane output for test_fullwidth_k should match capture.
-
-        test_fullwidth_k is a pure-black bar on white background.
-        Black pixels → K intensity 0 (full ink) → all dots set (0xFF).
-        White pixels → K intensity 255 (no ink) → no dots (0x00).
-        This is independent of the dither matrix, so it should match exactly.
-        """
-        import io
-
-        from brfilter import read_ppm, rgb_to_cmyk_lut
+    @staticmethod
+    def _plane_lines(cap, plane_id: int, plane_name: str, bpl: int):
+        """Yield (line, decoded bitmap) for every non-empty entry of one plane of a capture."""
         from brother_decode import decode_plane
-        from dither import dither_channel_1bpp, load_dither_tables
-        from fixture_utils import read_fixture
 
-        cap = all_captures["test_fullwidth_k"]
-
-        ppm_data = read_fixture("test_fullwidth_k.ppm")
-
-        ppm = read_ppm(io.BytesIO(ppm_data))
-        assert ppm is not None, "test_fullwidth_k.ppm is malformed"
-        width, height, _, pixels = ppm
-
-        channels = load_dither_tables()
-        sw = ((width + 31) // 32) * 32  # 32-pixel aligned
-        bpl = sw // 8
-        pad = bytes([255] * (sw - width)) if sw > width else b""
-
-        # Find K-plane blocks (plane_id=0)
-        k_blocks = [b for b in cap.blocks if b.plane_id == 0]
-        assert k_blocks, "No K-plane blocks in test_fullwidth_k"
-
-        for block in k_blocks:
+        for block in cap.blocks:
+            if block.plane_id != plane_id:
+                continue
             for entry_idx, entry in enumerate(block.entries):
-                line_idx = block.start_line + entry_idx
-                if line_idx >= height:
-                    break
+                if entry:
+                    yield block.start_line + entry_idx, decode_plane(entry, plane_name, n_bytes=bpl)
 
-                # Decompress captured data
-                captured_plane = decode_plane(entry, "K", n_bytes=bpl)
+    def test_black_page_k_dither_matches(self, all_captures):
+        """Every K line of a4_black decodes to the bitmap our dither makes of the black page.
 
-                # Our pipeline: RGB → CMYK intensity → dither
-                row_start = line_idx * width * 3
-                rgb_row = pixels[row_start : row_start + width * 3]
-                k_int, _, _, _ = rgb_to_cmyk_lut(rgb_row, width)
-                if pad:
-                    k_int = k_int + pad
-                our_plane = dither_channel_1bpp(k_int, line_idx, sw, channels["K"])
-
-                assert our_plane == captured_plane, (
-                    f"K-plane mismatch at line {line_idx}: "
-                    f"our {our_plane[:8].hex()}... vs captured {captured_plane[:8].hex()}..."
-                )
-
-    def test_fullwidth_c_dither_matches(self, all_captures):
-        """Dithered K and Y planes for test_fullwidth_c should match capture.
-
-        Verifies color separation (3D LUT) + BRCD dithering for a cyan page.
-        K and Y planes use 12-bit RLE encoding that we can decode and compare
-        here; the C and M encoders are covered byte for byte by the pipeline
-        capture tests.
+        Black pixels are full K ink, so every dot is set; the two pixels of
+        padding to the 32-pixel image width (4958 -> 4960) stay white.
         """
-        import io
+        from brfilter import rgb_to_cmyk_lut
+        from capture_pages import page
+        from dither import dither_channel_1bpp, load_dither_tables
+
+        cap = all_captures["a4_black"]
+        pixels = page("a4_black")
+        height, width = pixels.shape[:2]
+        sw = (width + 31) // 32 * 32
+        bpl = sw // 8
+        channels = load_dither_tables()
+        lines = 0
+        for line_idx, captured in self._plane_lines(cap, 0, "K", bpl):
+            if line_idx >= height:
+                continue
+            k_int, _, _, _ = rgb_to_cmyk_lut(pixels[line_idx].tobytes(), width)
+            ours = dither_channel_1bpp(k_int + b"\xff" * (sw - width), line_idx, sw, channels["K"])
+            assert ours == captured, f"K line {line_idx} differs"
+            lines += 1
+        assert lines > 6000
+
+    def test_cyan_band_dither_matches(self, all_captures):
+        """K and Y lines of cyan_100 match our separation + BRCD dither of the page, re-encoded.
+
+        Compared after encoding: the 12-bit RLE is lossy for dithered rows
+        (different bitmaps can encode to the same bytes), so decoded
+        bitmaps need not match.
+        """
         from pathlib import Path
 
-        from brfilter import read_ppm, rgb_to_cmyk_lut
-        from brother_decode import decode_plane
+        from brfilter import rgb_to_cmyk_lut
+        from brother_encode import encode_plane
+        from capture_pages import page
         from dither import dither_channel_1bpp, load_brcd_tables
-        from fixture_utils import read_fixture
 
-        cap = all_captures["test_fullwidth_c"]
-
-        ppm_data = read_fixture("test_fullwidth_c.ppm")
-
-        ppm = read_ppm(io.BytesIO(ppm_data))
-        assert ppm is not None, "test_fullwidth_c.ppm is malformed"
-        width, height, _, pixels = ppm
-
+        cap = all_captures["cyan_100"]
+        pixels = page("cyan_100")
+        width = pixels.shape[1]
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
         channels = load_brcd_tables(lut_dir)
         assert channels is not None, "BRCD tables missing; run scripts/extract_blobs.sh"
-        sw = ((width + 31) // 32) * 32
-        bpl = sw // 8
-        pad = bytes([255] * (sw - width)) if sw > width else b""
+        sw = (width + 31) // 32 * 32
+        pad = b"\xff" * (sw - width)
 
-        # Check K-plane (pid=0) and Y-plane (pid=3) — both use 12-bit RLE
+        total = 0
         for plane_id, plane_name, ch_idx in [(0, "K", 0), (3, "Y", 3)]:
-            blocks = [b for b in cap.blocks if b.plane_id == plane_id]
-            if not blocks:
-                continue
-
-            mismatches = 0
-            total = 0
-            for block in blocks:
+            for block in cap.blocks:
+                if block.plane_id != plane_id:
+                    continue
                 for entry_idx, entry in enumerate(block.entries):
                     line_idx = block.start_line + entry_idx
-                    if line_idx >= height or not entry:
-                        continue
+                    ch_int = rgb_to_cmyk_lut(pixels[line_idx].tobytes(), width)[ch_idx] + pad
+                    ours = dither_channel_1bpp(ch_int, line_idx, sw, channels[plane_name])
+                    assert encode_plane(ours, plane_name) == entry, f"{plane_name} line {line_idx} differs"
                     total += 1
-
-                    captured = decode_plane(entry, plane_name, n_bytes=bpl)
-
-                    row_start = line_idx * width * 3
-                    rgb_row = pixels[row_start : row_start + width * 3]
-                    intensities = rgb_to_cmyk_lut(rgb_row, width)
-                    ch_int = intensities[ch_idx]
-                    if pad:
-                        ch_int = ch_int + pad
-                    our_plane = dither_channel_1bpp(ch_int, line_idx, sw, channels[plane_name])
-
-                    if our_plane != captured:
-                        mismatches += 1
-
-            assert mismatches == 0, f"{plane_name}-plane: {mismatches}/{total} lines differ"
+        assert total > 0
 
     def test_gray75_dither_matches(self, all_captures):
         """Gray75 K-plane dither+compress should match gray75_1000 capture.
@@ -417,8 +377,8 @@ class TestCaptureVerification:
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
         channels = load_brcd_tables(lut_dir)
         assert channels is not None, "BRCD tables missing; run scripts/extract_blobs.sh"
-        sw = 4768  # standard 32-pixel aligned width for A4
-        width = 4760
+        sw = 4960  # A4 image width: 4958 rounded up to 32 pixels
+        width = 4958
 
         # Gray75 source = RGB(64,64,64) → LUT → K intensity (pixel-brightness)
         rgb_row = bytes([64, 64, 64]) * width
@@ -488,15 +448,15 @@ class TestFineBRCDTables:
         channels = load_brcd_tables(lut_dir, fine=True)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
-        # K: 96x12, C: 160x20, M: 160x20, Y: 48x12 (from captures)
-        k = channels["K"]
-        c = channels["C"]
-        m = channels["M"]
-        y = channels["Y"]
-        assert k.width * k.height > 0
-        assert c.width * c.height > 0
-        assert m.width * m.height > 0
-        assert y.width * y.height > 0
+        # HL-3040CN capt screens: K and Y 96x12 bits, C and M 160x20 bits; one
+        # byte (a 4-bit level) per pixel, so the cells are 12x12 and 20x20.
+        assert {ch: (t.width, t.height) for ch, t in channels.items()} == {
+            "K": (12, 12),
+            "C": (20, 20),
+            "M": (20, 20),
+            "Y": (12, 12),
+        }
+        assert all(t.nibble_levels is not None and int(t.nibble_levels.max()) <= 15 for t in channels.values())
 
     def test_fine_4bpp_dithering_output_length(self):
         """4bpp dithering with Fine channels produces correct output length."""
@@ -600,7 +560,7 @@ class TestBayerFallbackWarning:
             load_dither_tables(str(tmp_path), toner_save=True)
         warnings = self._fallback_warnings(caplog)
         assert len(warnings) == 2
-        assert "-TS_cache09.bin" in warnings[1].getMessage()
+        assert "-TS_cache08.bin" in warnings[1].getMessage()
 
     def test_present_tables_do_not_warn(self, caplog):
         from pathlib import Path
@@ -608,7 +568,7 @@ class TestBayerFallbackWarning:
         from dither import load_dither_tables
 
         lut_dir = Path(__file__).resolve().parent.parent / "src" / "lut"
-        if not (lut_dir / "0600-k_cache09.bin").exists():
+        if not (lut_dir / "0600-k_cache08.bin").exists():
             pytest.skip("BRCD blobs not extracted")
         with caplog.at_level("WARNING", logger="dither"):
             load_dither_tables(str(lut_dir))

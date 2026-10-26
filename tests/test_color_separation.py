@@ -8,7 +8,7 @@ tests/test_full_pipeline.py.
 
 import pytest
 
-from brfilter import ColorMatching, MediaType, PrintSettings, rgb_to_cmyk_lut
+from brfilter import ColorMatching, MediaType, PrintSettings, Resolution, rgb_to_cmyk_lut
 from color_lut import ColorTable
 from dither import dither_channel_1bpp
 from transforms import color_table
@@ -71,15 +71,14 @@ class TestOrderedDithering:
         from dither import load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
-        if not (Path(lut_dir) / "0600-k_cache09.bin").exists():
+        if not (Path(lut_dir) / "0600-k_cache08.bin").exists():
             pytest.skip("Original BRCD files not available")
         channels = load_brcd_tables(lut_dir)
         assert channels is not None
-        # K and Y use 32x32, C and M use 40x40
-        assert channels["K"].width == 32
-        assert channels["Y"].width == 32
-        assert channels["C"].width == 40
-        assert channels["M"].width == 40
+        # HL-3040CN 0600 cache08 screens: K, C and M 80x80, Y 24x24
+        assert (channels["K"].width, channels["K"].height) == (80, 80)
+        assert (channels["C"].width, channels["M"].width) == (80, 80)
+        assert (channels["Y"].width, channels["Y"].height) == (24, 24)
 
 
 # ---------------------------------------------------------------------------
@@ -97,9 +96,16 @@ class TestColorTables:
             (PrintSettings(color_matching=ColorMatching.VIVID), ColorTable("srgb")),
             (PrintSettings(color_matching=ColorMatching.NONE), ColorTable("cmyk")),
             (PrintSettings(improve_gray=True), ColorTable("rgb", improve_gray=True)),
-            (PrintSettings(toner_save=True), ColorTable("rgb", variant="density2")),
-            (PrintSettings(media_type=MediaType.GLOSSY), ColorTable("rgb", variant="glossy")),
-            (PrintSettings(toner_save=True, media_type=MediaType.GLOSSY), ColorTable("rgb", variant="density2")),
+            # The HL-3040CN has no toner-save or glossy grids: toner save only
+            # switches the dither files, the media type changes nothing.
+            (PrintSettings(toner_save=True), ColorTable("rgb")),
+            (PrintSettings(media_type=MediaType.BOND), ColorTable("rgb")),
+            # Fine takes the CAPT grids.
+            (PrintSettings(resolution=Resolution.FINE), ColorTable("rgb", variant="fine")),
+            (
+                PrintSettings(resolution=Resolution.FINE, color_matching=ColorMatching.VIVID, improve_gray=True),
+                ColorTable("srgb", improve_gray=True, variant="fine"),
+            ),
             (PrintSettings(enhance_black=True), ColorTable("rgb", rich_black=True)),
             (PrintSettings(enhance_black=True, color_matching=ColorMatching.NONE), ColorTable("cmyk")),
         ],
@@ -110,26 +116,27 @@ class TestColorTables:
     @pytest.mark.parametrize(
         ("table", "rgb", "expected"),
         [
-            (ColorTable("srgb"), (0, 255, 255), (255, 20, 255, 255)),
-            (ColorTable("srgb"), (255, 0, 0), (255, 255, 30, 30)),
-            (ColorTable("srgb"), (25, 230, 230), (253, 35, 251, 235)),
-            (ColorTable("rgb", variant="density2"), (30, 200, 90), (248, 98, 253, 96)),
-            (ColorTable("rgb", variant="density2"), (250, 240, 10), (255, 253, 244, 16)),
+            (ColorTable("rgb"), (0, 255, 255), (255, 62, 255, 243)),
+            (ColorTable("rgb"), (255, 0, 0), (255, 255, 43, 65)),
+            (ColorTable("rgb"), (128, 128, 128), (240, 175, 199, 192)),
+            (ColorTable("rgb", improve_gray=True), (128, 128, 128), (149, 255, 255, 255)),
+            (ColorTable("rgb", variant="fine"), (128, 128, 128), (255, 168, 191, 191)),
+            (ColorTable("srgb"), (0, 255, 255), (255, 0, 255, 255)),
             (ColorTable("cmyk"), (30, 200, 90), (255, 35, 236, 113)),
             (ColorTable("cmyk"), (200, 100, 50), (255, 235, 124, 60)),
         ],
     )
     def test_separation_matches_original(self, table, rgb, expected):
-        """(K, C, M, Y) as recovered from brhl4150cdnfilter output for these solid colours."""
+        """(K, C, M, Y) as brhl3040cnfilter separates these solid colours (checked against its captures)."""
         k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(*rgb, width=1), 1, table)
         assert (k[0], c[0], m[0], y[0]) == expected
 
     def test_rich_black_takes_grid_entry_zero(self):
         k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(0, 0, 0, width=1), 1, ColorTable("rgb", rich_black=True))
-        assert (k[0], c[0], m[0], y[0]) == (0, 255 - 83, 255 - 55, 255 - 65)
+        assert (k[0], c[0], m[0], y[0]) == (0, 255 - 45, 255 - 34, 255 - 40)
         k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(0, 0, 0, width=1), 1, ColorTable("rgb"))
         assert (k[0], c[0], m[0], y[0]) == (0, 255, 255, 255)
 
 
 # Brightness / contrast / RGB-key adjustments are covered byte-for-byte
-# by the cyan_100_* fixtures in tests/test_full_pipeline.py.
+# by the cyan_100_* captures in tests/test_captures.py.

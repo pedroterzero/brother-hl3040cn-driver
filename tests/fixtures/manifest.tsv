@@ -1,0 +1,100 @@
+name	page	overrides
+a4_white	a4_white	
+a4_black	a4_black	
+cyan_100	cyan_100	
+red_100	red_100	
+gray50_1000	gray50_1000	
+gray75_1000	gray75_1000	
+cyan_100_saturation_p20	cyan_100	Saturation=20
+cyan_100_green_p20	cyan_100	GreenKey=20
+cyan_100_blue_p20	cyan_100	BlueKey=20
+cyan_100_red_p20	cyan_100	RedKey=20
+cyan_100_cm_none	cyan_100	BRColorMatching=None
+cyan_100_vivid	cyan_100	BRColorMatching=Vivid
+cyan_100_brightness_p20	cyan_100	Brightness=20
+cyan_100_brightness_n20	cyan_100	Brightness=-20
+cyan_100_contrast_p20	cyan_100	Contrast=20
+cyan_100_contrast_n20	cyan_100	Contrast=-20
+cyan_100_saturation_n20	cyan_100	Saturation=-20
+cyan_100_combined	cyan_100	Brightness=10 Contrast=10 Saturation=10
+cyan_100_toner_save	cyan_100	TonerSaveMode=ON
+mixed_baseline	mixed	
+mixed_saturation_p20	mixed	Saturation=20
+mixed_saturation_p7	mixed	Saturation=7
+mixed_saturation_n20	mixed	Saturation=-20
+mixed_contrast_n20	mixed	Contrast=-20
+mixed_brightness_p15	mixed	Brightness=15
+mixed_vivid	mixed	BRColorMatching=Vivid
+mixed_toner_save	mixed	TonerSaveMode=ON
+mixed_cm_none	mixed	BRColorMatching=None
+mixed_cm_none_adjusted	mixed	BRColorMatching=None Brightness=15 Saturation=-20 RedKey=10
+mixed_improve_gray	mixed	BRGray=ON
+mixed_enhance_black	mixed	BREnhanceBlkPrt=ON
+mixed_vivid_toner_save_gray	mixed	BRColorMatching=Vivid TonerSaveMode=ON BRGray=ON
+mixed_fine	mixed	BRResolution=Fine
+mixed_fine_vivid	mixed	BRResolution=Fine BRColorMatching=Vivid
+mixed_fine_toner_save	mixed	BRResolution=Fine TonerSaveMode=ON
+mixed_fine_improve_gray	mixed	BRResolution=Fine BRGray=ON
+mixed_fine_cm_none	mixed	BRResolution=Fine BRColorMatching=None
+mixed_fullcolor	mixed	BRMonoColor=FullColor
+mixed_less_curl	mixed	BRImproveOutput=BRLessPaperCurl
+mixed_fix_intensity	mixed	BRImproveOutput=BRFixIntensity
+mixed_tray1	mixed	InputSlot=Tray1
+mixed_manual	mixed	InputSlot=Manual
+mixed_copies3	mixed	Copies=3
+mixed_copies3_collate	mixed	Copies=3 Collate=ON
+mixed_media_Thin	mixed	MediaType=Thin
+mixed_media_Thick	mixed	MediaType=Thick
+mixed_media_Thicker	mixed	MediaType=Thicker
+mixed_media_BOND	mixed	MediaType=BOND
+mixed_media_Env	mixed	MediaType=Env
+mixed_media_EnvThin	mixed	MediaType=EnvThin
+mixed_media_EnvThick	mixed	MediaType=EnvThick
+mixed_media_Recycled	mixed	MediaType=Recycled
+mixed_media_Label	mixed	MediaType=Label
+mixed_media_PostCard	mixed	MediaType=PostCard
+mono_gray50	gray50_1000	BRMonoColor=Mono
+mono_red	red_100	BRMonoColor=Mono
+mono_mixed	mixgreen_100	BRMonoColor=Mono
+mono_ramp	ramps	BRMonoColor=Mono
+mono_ramp_bright	ramps	BRMonoColor=Mono Brightness=20
+mono_ramp_contrast	ramps	BRMonoColor=Mono Contrast=-20
+mono_ramp_ts	ramps	BRMonoColor=Mono TonerSaveMode=ON
+mono_ramp_fine	ramps	BRMonoColor=Mono BRResolution=Fine
+auto_gray_ramps	ramps	
+auto_gray50	gray50_1000	
+fine_a4_white	a4_white	BRResolution=Fine
+fine_a4_black	a4_black	BRResolution=Fine
+fine_cyan_100	cyan_100	BRResolution=Fine
+fine_gray50_1000	gray50_1000	BRResolution=Fine
+size_A4	edges_A4	PageSize=A4
+size_Letter	edges_Letter	PageSize=Letter
+size_Legal	edges_Legal	PageSize=Legal
+size_Executive	edges_Executive	PageSize=Executive
+size_A5	edges_A5	PageSize=A5
+size_PRA5Rotated	edges_PRA5Rotated	PageSize=PRA5Rotated
+size_A6	edges_A6	PageSize=A6
+size_B5	edges_B5	PageSize=B5
+size_B6	edges_B6	PageSize=B6
+size_JISB5	edges_JISB5	PageSize=JISB5
+size_JISB6	edges_JISB6	PageSize=JISB6
+size_EnvDL	edges_EnvDL	PageSize=EnvDL
+size_EnvC5	edges_EnvC5	PageSize=EnvC5
+size_Env10	edges_Env10	PageSize=Env10
+size_EnvMonarch	edges_EnvMonarch	PageSize=EnvMonarch
+size_Br3x5	edges_Br3x5	PageSize=Br3x5
+size_BrA4Long	edges_BrA4Long	PageSize=BrA4Long
+size_FanFoldGermanLegal	edges_FanFoldGermanLegal	PageSize=FanFoldGermanLegal
+size_EnvPRC5Rotated	edges_EnvPRC5Rotated	PageSize=EnvPRC5Rotated
+size_PostCard	edges_PostCard	PageSize=PostCard
+size_EnvYou4	edges_EnvYou4	PageSize=EnvYou4
+size_EnvChou3	edges_EnvChou3	PageSize=EnvChou3
+mixed_color	mixed	BRMonoColor=Color
+cyan_100_color	cyan_100	BRMonoColor=Color
+envdl_manual_env	edges_EnvDL	PageSize=EnvDL InputSlot=Manual MediaType=Env
+env10_manual_envthick	edges_Env10	PageSize=Env10 InputSlot=Manual MediaType=EnvThick
+multi3	mixed+cyan_100+a4_white	
+multi3_mono	ramps+mixed+gray50_1000	BRMonoColor=Mono
+multi2_reverse	mixed+cyan_100	BRReverse=ON
+multi2_copies2	mixed+cyan_100	Copies=2
+multi2_copies2_collate	mixed+cyan_100	Copies=2 Collate=ON

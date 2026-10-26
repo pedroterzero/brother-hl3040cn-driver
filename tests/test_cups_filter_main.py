@@ -2,7 +2,8 @@
 
 The filter runs as CUPS runs it, as a subprocess with the CUPS argument
 vector. A stand-in `gs` first on PATH writes PPM pages (or fails) as the
-test asks and records how it was called.
+test asks and records how it was called. Outputs of separate runs are
+compared with the PRINTLOG timestamp masked (`mask_printlog`).
 """
 
 import io
@@ -16,13 +17,14 @@ from pathlib import Path
 
 import pytest
 
+from fixture_utils import mask_printlog
 from pipeline import filter_pages
 from settings import PrintSettings
 from xl2hb import OP_END_SESSION, generate_pjl_footer
 
-_FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn-filter"
+_FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl3040cn-filter"
 
-# Postcard keeps the rendered pages small.
+# Postcard keeps the rendered pages small (the PPD's PageSize name).
 _OPTIONS = "PageSize=Postcard"
 _JOB = b"%!PS-Adobe-3.0\n%%Pages: 2\n%%EndComments\nshowpage\nshowpage\n%%EOF\n"
 
@@ -42,9 +44,8 @@ _FAKE_GS = textwrap.dedent(
         sys.stderr.write("Error: /undefined in foo\\nOperand stack:\\n")
         sys.exit(1)
 
-    points = dict(a[2:].split("=") for a in args if a.startswith("-dDEVICE") and "POINTS=" in a)
-    width = round(int(points["DEVICEWIDTHPOINTS"]) * 600 / 72)
-    height = round(int(points["DEVICEHEIGHTPOINTS"]) * 600 / 72)
+    geometry = next(a for a in args if a.startswith("-g"))
+    width, height = (int(v) for v in geometry[2:].split("x"))
     header = b"P6\\n%d %d\\n255\\n" % (width, height)
     row = bytes([200, 120, 40]) * width
     out = sys.stdout.buffer
@@ -98,7 +99,7 @@ def test_reads_the_job_from_stdin(fake_gs):
     assert call["job"].encode("latin-1") == _JOB
     assert result.stdout.startswith(b"\x1b%-12345X@PJL")
     assert result.stdout.endswith(bytes([OP_END_SESSION]) + generate_pjl_footer())
-    assert b"INFO: brhl4150cdn-filter: job=42 user=alice title='My Title' copies=1" in result.stderr
+    assert b"INFO: brhl3040cn-filter: job=42 user=alice title='My Title' copies=1" in result.stderr
 
 
 def test_reads_the_job_from_the_file_argument(fake_gs, tmp_path):
@@ -107,14 +108,15 @@ def test_reads_the_job_from_the_file_argument(fake_gs, tmp_path):
     from_file = _run(fake_gs, file=job, stdin=b"")
     assert from_file.returncode == 0, from_file.stderr.decode()
     assert _gs_call(fake_gs)["args"][-1] == str(job)
-    assert from_file.stdout == _run(fake_gs).stdout
+    assert mask_printlog(from_file.stdout) == mask_printlog(_run(fake_gs).stdout)
 
 
-def test_copies_argument_reaches_the_job(fake_gs):
+def test_copies_are_left_to_cups(fake_gs):
+    """The PPD sets cupsManualCopies: CUPS repeats the job, the filter renders one copy."""
     one, two = _run(fake_gs), _run(fake_gs, copies="2")
     assert two.returncode == 0
     assert b"copies=2" in two.stderr
-    assert one.stdout != two.stdout
+    assert mask_printlog(one.stdout) == mask_printlog(two.stdout)
 
 
 def test_usage_error_without_cups_arguments(fake_gs):
@@ -122,13 +124,13 @@ def test_usage_error_without_cups_arguments(fake_gs):
         [sys.executable, str(_FILTER), "42"], capture_output=True, env=fake_gs, timeout=60, check=False
     )
     assert result.returncode == 1
-    assert b"ERROR: brhl4150cdn-filter: Usage:" in result.stderr
+    assert b"ERROR: brhl3040cn-filter: Usage:" in result.stderr
     assert result.stdout == b""
 
 
-def test_reverse_long_edge_streams_the_job_from_stdin(fake_gs):
+def test_reverse_streams_the_job_from_stdin(fake_gs):
     """Reverse turns pages in place, so the job needs neither spooling nor a page count."""
-    result = _run(fake_gs, options=f"{_OPTIONS} Duplex=DuplexNoTumble BRReverse=ON", pages=2)
+    result = _run(fake_gs, options=f"{_OPTIONS} BRReverse=ON", pages=2)
     assert result.returncode == 0, result.stderr.decode()
     assert _gs_call(fake_gs)["args"][-1] == "-"
     assert result.stdout.endswith(bytes([OP_END_SESSION]) + generate_pjl_footer())
@@ -138,8 +140,8 @@ def test_gs_failure_at_start(fake_gs):
     result = _run(fake_gs, mode="fail_start")
     assert result.returncode == 1
     assert result.stdout == b""
-    assert b"ERROR: brhl4150cdn-filter: GS: Error: /undefined in foo" in result.stderr
-    assert b"ERROR: brhl4150cdn-filter: Ghostscript exited with status 1" in result.stderr
+    assert b"ERROR: brhl3040cn-filter: GS: Error: /undefined in foo" in result.stderr
+    assert b"ERROR: brhl3040cn-filter: Ghostscript exited with status 1" in result.stderr
     assert b"Traceback" not in result.stderr
 
 
@@ -150,10 +152,10 @@ def test_gs_failure_mid_job_sends_only_complete_pages(fake_gs):
 
     broken = _run(fake_gs, pages=1, mode="truncate")
     assert broken.returncode == 1
-    assert broken.stdout == complete.stdout
+    assert mask_printlog(broken.stdout) == mask_printlog(complete.stdout)
     stderr = broken.stderr.decode()
-    assert "ERROR: brhl4150cdn-filter: Ghostscript failed with exit status 3" in stderr
-    assert "ERROR: brhl4150cdn-filter: GS: Error: /ioerror in --showpage--" in stderr
+    assert "ERROR: brhl3040cn-filter: Ghostscript failed with exit status 3" in stderr
+    assert "ERROR: brhl3040cn-filter: GS: Error: /ioerror in --showpage--" in stderr
     assert "while reading page 2 from Ghostscript" in stderr
     assert "Traceback" not in stderr
 
@@ -164,40 +166,39 @@ def test_gs_failure_mid_job_in_reverse_order_sends_only_complete_pages(fake_gs):
     assert complete.returncode == 0
     broken = _run(fake_gs, options=options, pages=1, mode="truncate")
     assert broken.returncode == 1
-    assert broken.stdout == complete.stdout
+    assert mask_printlog(broken.stdout) == mask_printlog(complete.stdout)
 
 
-def test_fine_resolution_prints_in_normal_mode(fake_gs):
-    normal = _run(fake_gs)
+def test_fine_resolution_reaches_the_job(fake_gs):
+    """Fine is byte-identical to Brother's filter on the HL-3040CN and passed through."""
     fine = _run(fake_gs, options=f"{_OPTIONS} BRResolution=600x2400dpi")
-    assert fine.returncode == 0
-    assert b"WARNING: brhl4150cdn-filter: Fine mode is not verified" in fine.stderr
-    assert b"resolution=Normal" in fine.stderr
-    assert fine.stdout == normal.stdout
+    assert fine.returncode == 0, fine.stderr.decode()
+    assert b"resolution=Fine" in fine.stderr
+    assert b"@PJL SET APTMODE=ON4" in fine.stdout
 
 
-def test_ppd_offers_no_fine_mode():
-    ppd = (_FILTER.parent / "brhl4150cdn.ppd").read_text(encoding="latin-1")
-    choices = [line for line in ppd.splitlines() if line.startswith("*BRResolution ")]
-    assert choices == ['*BRResolution 600dpi/Normal (600 x 600dpi): \t"          "']
+def test_ppd_offers_normal_and_fine():
+    ppd = (_FILTER.parent / "brhl3040cn.ppd").read_text(encoding="latin-1")
+    choices = [line.split(":")[0] for line in ppd.splitlines() if line.startswith("*BRResolution ")]
+    assert choices == ["*BRResolution 600dpi/Normal (600 x 600dpi)", "*BRResolution 600x2400dpi/Fine (2400 dpi class)"]
 
 
 @pytest.mark.parametrize(("value", "expected"), [("2", 2), ("0", 0), ("-1", 0)])
 def test_render_threads_from_environment(monkeypatch, value, expected):
     import pipeline
 
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", value)
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", value)
     assert pipeline._render_threads() == expected
 
 
 def test_non_numeric_render_threads_fall_back_to_the_default(monkeypatch, caplog):
     import pipeline
 
-    monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS", raising=False)
+    monkeypatch.delenv("BRHL3040CN_RENDER_THREADS", raising=False)
     default = pipeline._render_threads()
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "four")
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", "four")
     assert pipeline._render_threads() == default
-    assert "non-numeric BRHL4150CDN_RENDER_THREADS='four'" in caplog.text
+    assert "non-numeric BRHL3040CN_RENDER_THREADS='four'" in caplog.text
 
 
 def test_filter_pages_closes_the_session_when_a_page_breaks_off():

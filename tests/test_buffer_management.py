@@ -305,12 +305,12 @@ class TestFillFlushLoop:
             assert ranks == sorted(ranks), f"Flush order violated at start={start}: got planes {planes}"
 
     def test_a4_black_line_count(self):
-        """A4 at 600dpi has 6812 lines — verify total lines match."""
+        """A4 at 600dpi has 6981 lines (HL-3040CN paperinfij2) — verify total lines match."""
         pb = PlaneBuffer(plane_id=0)
         # Simulate all-black K-plane with small compressed entries
         entry = b"\xff\xff"  # tiny entry
         total_lines = 0
-        paper_h = 6812
+        paper_h = 6981
 
         for line_idx in range(paper_h):
             pb.append_scanline(entry, line_idx)

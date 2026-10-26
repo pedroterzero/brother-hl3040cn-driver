@@ -2,8 +2,8 @@
 
 A4 pages are ~100 MB of RGB; on a Raspberry Pi 3 (1 GB) every extra page
 that stays referenced counts. Pages are handed over as whole buffers when
-they are skipped-blank tested or flipped, so the pipeline must drop each
-page before the next one is read.
+they are flipped (BRReverse) or repeated (Copies without Collate), so the
+pipeline must drop each page before the next one is read.
 """
 
 import gc
@@ -14,8 +14,8 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from pipeline import chain_peeked, drop_blank_pages, filter_pages
-from settings import DuplexMode, PrintSettings
+from pipeline import chain_peeked, filter_pages
+from settings import PrintSettings
 
 W, H = 64, 48
 
@@ -37,19 +37,14 @@ def _pages(count: int, alive: list, blank: frozenset[int] = frozenset()) -> Iter
         del page
 
 
-@pytest.mark.parametrize("duplex", [DuplexMode.NONE, DuplexMode.NO_TUMBLE])
-@pytest.mark.parametrize("skip_blank", [False, True])
+@pytest.mark.parametrize("copies", [1, 2])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_previous_page_is_released_before_the_next_is_read(duplex, skip_blank, reverse):
+def test_previous_page_is_released_before_the_next_is_read(copies, reverse):
     alive: list = []
-    settings = PrintSettings(duplex=duplex, skip_blank=skip_blank, reverse=reverse)
-    # Pages 2 and 3 are blank: with skip blank, a dropped page must not
-    # linger either while the next one is read.
+    settings = PrintSettings(copies=copies, reverse=reverse)
     pages = _pages(5, alive, blank=frozenset({1, 2}))
     first = next(pages)
     pages = chain_peeked(first, pages)
     del first
-    if skip_blank:
-        pages = drop_blank_pages(pages)
     filter_pages(pages, settings, io.BytesIO())
     assert len(alive) == 5

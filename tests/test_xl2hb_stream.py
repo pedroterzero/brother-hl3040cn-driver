@@ -1,20 +1,20 @@
 """
 Full stream integration tests.
 
-Reconstructs XL2HB output from parsed capture data and compares
-byte-for-byte against the original driver capture files.
+Reconstructs XL2HB output from parsed capture data with XL2HBWriter and
+compares it byte for byte against the captures of Brother's HL-3040CN
+filter: this checks the session, page and image framing independently of
+the colour pipeline.
 """
 
+import itertools
 import logging
 from io import BytesIO
 
 import pytest
 
-from fixture_utils import assert_bytes_equal
-from xl2hb import (
-    XL2HBWriter,
-    get_image_dimensions,
-)
+from fixture_utils import CAPTURE_NAMES, assert_bytes_equal
+from xl2hb import XL2HBWriter, get_image_dimensions
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -22,7 +22,12 @@ from xl2hb import (
 
 
 def _reconstruct_stream(cap) -> bytes:
-    """Rebuild the full XL2HB file from a parsed CaptureFixture."""
+    """Rebuild the full XL2HB file from a parsed CaptureFixture.
+
+    The framing captures are A4 pages printed with Brother's default rc
+    (Copies=0) apart from the colour mode.
+    """
+    color = not cap.filename.startswith("mono_")
     buf = BytesIO()
     buf.write(cap.pjl_header)
 
@@ -34,18 +39,13 @@ def _reconstruct_stream(cap) -> bytes:
     w.write_set_page_origin()
 
     sw, sh = get_image_dimensions("A4")
-    w.write_begin_image(sw, sh)
+    w.write_begin_image(sw, sh, copies=0, color=color)
 
     for block in cap.blocks:
-        w.write_read_image(
-            block.start_line,
-            block.block_height,
-            block.plane_id,
-            block.expected_blob,
-        )
+        w.write_read_image(block.start_line, block.block_height, block.plane_id, block.expected_blob)
 
     w.write_end_image()
-    w.write_end_page()
+    w.write_end_page(copies=0)
     w.write_close_data_source()
     w.write_end_session()
 
@@ -58,62 +58,29 @@ def _reconstruct_stream(cap) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-class TestWhitePage:
-    def test_white_page(self, all_captures):
-        """a4_white: zero blocks, byte-for-byte match."""
-        cap = all_captures["a4_white"]
-        actual = _reconstruct_stream(cap)
-        assert_bytes_equal(actual, cap.raw, "a4_white")
+@pytest.mark.parametrize("name", CAPTURE_NAMES)
+def test_reconstructed_stream_matches_capture(all_captures, name):
+    cap = all_captures[name]
+    assert_bytes_equal(_reconstruct_stream(cap), cap.raw, name)
 
 
-class TestSingleBlockK:
-    @pytest.mark.parametrize("name", ["test_fullwidth_k", "allblack_1000", "halfblack_1000"])
-    def test_single_block_k(self, all_captures, name):
-        """Single K-plane block captures."""
-        cap = all_captures[name]
-        actual = _reconstruct_stream(cap)
-        assert_bytes_equal(actual, cap.raw, name)
+class TestCaptureContents:
+    def test_white_page_has_no_blocks(self, all_captures):
+        assert all_captures["a4_white"].blocks == []
 
+    def test_mono_sends_only_k(self, all_captures):
+        for name in ("mono_gray50", "mono_ramp"):
+            assert {b.plane_id for b in all_captures[name].blocks} == {0}
 
-class TestMultiBlockFlush:
-    def test_a4_black_multi_block(self, all_captures):
-        """a4_black: 4 K blocks with buffer flush boundaries."""
-        cap = all_captures["a4_black"]
-        actual = _reconstruct_stream(cap)
-        assert_bytes_equal(actual, cap.raw, "a4_black")
+    def test_red_has_only_m_and_y(self, all_captures):
+        assert {b.plane_id for b in all_captures["red_100"].blocks} == {2, 3}
 
-
-class TestMultiPlane:
-    @pytest.mark.parametrize("name", ["test_fullwidth_y", "red_100"])
-    def test_multi_plane_my(self, all_captures, name):
-        """M+Y two-plane captures."""
-        cap = all_captures[name]
-        actual = _reconstruct_stream(cap)
-        assert_bytes_equal(actual, cap.raw, name)
-
-
-class TestAllPlanes:
-    @pytest.mark.parametrize("name", ["test_fullwidth_c", "gray75_1000"])
-    def test_all_planes(self, all_captures, name):
-        """All 4 planes (K,C,M,Y) captures."""
-        cap = all_captures[name]
-        actual = _reconstruct_stream(cap)
-        assert_bytes_equal(actual, cap.raw, name)
-
-
-# ---------------------------------------------------------------------------
-# Flush boundary verification
-# ---------------------------------------------------------------------------
-
-
-class TestFlushBoundaries:
     def test_a4_black_flush_boundaries(self, all_captures):
-        """Verify a4_black flush start_lines at 0, 2249, 4498, 6747."""
-        cap = all_captures["a4_black"]
-        assert len(cap.blocks) == 4
-        expected_starts = [0, 2249, 4498, 6747]
-        actual_starts = [b.start_line for b in cap.blocks]
-        assert actual_starts == expected_starts, f"Flush boundaries: expected {expected_starts}, got {actual_starts}"
+        """a4_black: K blocks of 2249 lines each, the last one ending at the paper height (6981)."""
+        blocks = all_captures["a4_black"].blocks
+        assert [b.start_line for b in blocks] == [0, 2249, 4498, 6747]
+        assert {b.plane_id for b in blocks} == {0}
+        assert blocks[-1].start_line + blocks[-1].block_height == 6981
 
 
 # ---------------------------------------------------------------------------
@@ -124,31 +91,25 @@ class TestFlushBoundaries:
 class TestFlushOrder:
     def test_m_before_y(self, all_captures):
         """In multi-plane captures, M(2) appears before Y(3)."""
-        for name in ["test_fullwidth_y", "red_100"]:
-            cap = all_captures[name]
-            plane_ids = [b.plane_id for b in cap.blocks]
-            m_indices = [i for i, p in enumerate(plane_ids) if p == 2]
-            y_indices = [i for i, p in enumerate(plane_ids) if p == 3]
-            if m_indices and y_indices:
-                assert m_indices[0] < y_indices[0], f"{name}: M should come before Y, got plane order {plane_ids}"
+        plane_ids = [b.plane_id for b in all_captures["red_100"].blocks]
+        assert plane_ids.index(2) < plane_ids.index(3)
 
-    def test_flush_order_consecutive_pairs(self, all_captures):
-        """Consecutive blocks with the same start_line follow CMYK order.
+    def test_blocks_ending_on_an_empty_line_follow_cmyk_order(self, all_captures):
+        """Planes flushed by the same empty line come out C, M, Y, K (cyan_100, gray50_1000).
 
-        Blocks at the same start_line from different flush events may not be
-        adjacent, so we only check consecutive pairs — these come from the
-        same flush event and must respect the C(1),M(2),Y(3),K(0) order.
+        The full block order of every capture is checked byte for byte in
+        tests/test_captures.py; a plane flushed because its buffer is nearly
+        full can end on the same line as one flushed later.
         """
         flush_rank = {1: 0, 2: 1, 3: 2, 0: 3}
-        for name in ["test_fullwidth_c", "gray75_1000"]:
-            cap = all_captures[name]
-            for i in range(len(cap.blocks) - 1):
-                a, b = cap.blocks[i], cap.blocks[i + 1]
-                if a.start_line == b.start_line:
-                    assert flush_rank[a.plane_id] < flush_rank[b.plane_id], (
-                        f"{name} blocks {i},{i + 1}: plane {a.plane_id} should "
-                        f"come before {b.plane_id} in CMYK flush order"
-                    )
+        pairs = 0
+        for name in ("cyan_100", "gray50_1000"):
+            blocks = all_captures[name].blocks
+            for a, b in itertools.pairwise(blocks):
+                if a.start_line + len(a.entries) == b.start_line + len(b.entries):
+                    assert flush_rank[a.plane_id] < flush_rank[b.plane_id]
+                    pairs += 1
+        assert pairs
 
 
 # ---------------------------------------------------------------------------
@@ -164,17 +125,25 @@ class TestUnknownMediaDefaults:
         buf = BytesIO()
         w = XL2HBWriter(buf)
         with caplog.at_level(logging.WARNING, logger="xl2hb"):
-            w.write_begin_page(media_size="Folio")
+            w.write_begin_page(media_size="A3")
         assert "Unknown media size" in caplog.text
-        # A4 enum value is 0x02 — verify it appears in the output
-        data = buf.getvalue()
-        assert b"\xc0\x02\xf8\x25" in data  # TAG_UBYTE 0x02 TAG_ATTR ATTR_MEDIA_SIZE
+        assert b"\xc0\x02\xf8\x25" in buf.getvalue()  # TAG_UBYTE 0x02 TAG_ATTR ATTR_MEDIA_SIZE
 
     def test_unknown_media_type(self, caplog):
-        """Unknown media type defaults to 'dRegular' and logs a warning."""
+        """Unknown media type (e.g. Glossy, which the HL-3040CN lacks) defaults to dRegular."""
         buf = BytesIO()
         w = XL2HBWriter(buf)
         with caplog.at_level(logging.WARNING, logger="xl2hb"):
-            w.write_begin_page(media_type="Cardstock")
+            w.write_begin_page(media_type="Glossy")
         assert "Unknown media type" in caplog.text
         assert b"dRegular" in buf.getvalue()
+
+    @pytest.mark.parametrize(("name", "xy"), [("PRA5Rotated", (2059, 1466)), ("JISB6", (1276, 1820))])
+    def test_custom_media_size(self, name, xy):
+        """A5 long edge and JIS B6 go out as CustomMediaSize in 0.1 mm, no MediaSize."""
+        buf = BytesIO()
+        XL2HBWriter(buf).write_begin_page(media_size=name)
+        x, y = xy
+        expected = b"\xd1" + x.to_bytes(2, "little") + y.to_bytes(2, "little") + b"\xf8\x2f\xc0\x02\xf8\x30"
+        assert expected in buf.getvalue()
+        assert b"\xf8\x25" not in buf.getvalue()

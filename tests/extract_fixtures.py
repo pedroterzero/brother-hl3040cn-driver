@@ -1,7 +1,7 @@
 """
 Capture parser for XL2HB test fixtures.
 
-Parses original driver captures (tests/fixtures/) at test time, extracting
+Parses the captures of Brother's HL-3040CN filter (tests/fixtures/) at test time, extracting
 per-block compressed plane data for comparison against our framing layer.
 It keeps its own copy of the PCL-XL tags so it does not share code with the
 writer it checks.
@@ -160,14 +160,16 @@ def parse_xl2hb_capture(raw: bytes, filename: str = "<bytes>") -> CaptureFixture
     # Stream header ends at the newline after the marker
     stream_hdr_end = raw.index(b"\n", marker_pos) + 1
 
-    # --- Find PJL footer (double UEL) ---
-    # Footer = last two UEL sequences
+    # --- Find PJL footer ---
+    # Brother's HL-3040CN filter ends the job with UEL, @PJL EOJ, UEL: the
+    # footer starts at the second-to-last UEL.
     uel = b"\x1b%-12345X"
-    # Find the start of the double UEL at the end
-    # The footer is exactly 2 x UEL = 2 x 9 bytes = 18 bytes
-    footer_len = len(uel) * 2
-    pjl_footer = raw[-footer_len:]
-    payload_end = len(raw) - footer_len
+    footer_pos = raw.rfind(uel, 0, len(raw) - len(uel))
+    if footer_pos < 0 or not raw.endswith(uel):
+        msg = f"No PJL footer in {filename}"
+        raise ValueError(msg)
+    pjl_footer = raw[footer_pos:]
+    payload_end = footer_pos
 
     # --- Walk binary payload ---
     data = raw

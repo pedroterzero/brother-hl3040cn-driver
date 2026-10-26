@@ -12,7 +12,7 @@ import fine_encoder
 import pipeline
 from fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane_py
 from pipeline import filter_pages
-from settings import ColorMatching, MediaType, PageSize, PrintSettings, Resolution
+from settings import ColorMatching, PageSize, PrintSettings, Resolution
 
 _fine_fast = pytest.importorskip("_fine_fast")
 
@@ -131,7 +131,7 @@ def test_dither_row_4bpp_rejects_bad_shapes():
 # Fine band kernel (render_band_fine) vs. the per-line path
 # ---------------------------------------------------------------------------
 
-_A4_W = 4760
+_A4_W = 4958  # HL-3040CN paperinfij2; the Fine image is 4960 wide
 
 
 @pytest.fixture(scope="module")
@@ -173,7 +173,7 @@ def _fine_page(width: int, height: int, seed: int) -> bytes:
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
     monkeypatch.setattr(pipeline, "HAS_FINE_BAND_KERNEL", kernel)
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
     return out.getvalue()
@@ -189,7 +189,7 @@ _SETTINGS = {
     "input_remap": PrintSettings(resolution=_FINE, brightness=-20, contrast=10, red=5, blue=-7),
     "toner_save": PrintSettings(resolution=_FINE, toner_save=True),
     "improve_gray": PrintSettings(resolution=_FINE, improve_gray=True),
-    "glossy": PrintSettings(resolution=_FINE, media_type=MediaType.GLOSSY),
+    "vivid_improve_gray": PrintSettings(resolution=_FINE, color_matching=ColorMatching.VIVID, improve_gray=True),
 }
 
 
@@ -207,8 +207,8 @@ def test_fine_kernel_matches_per_line_path(name, fine_channels, colour_source, m
     [
         (3001, PageSize.A4),  # narrower than the image: white padding on the right
         (5000, PageSize.A4),  # wider than the image: cut at sw
-        (4900, PageSize.LETTER),  # image width rounded up to 4904
-        (4904, PageSize.LETTER),  # overrun geometry at the padded width
+        (5100, PageSize.LETTER),  # image width rounded up to 5104
+        (5104, PageSize.LETTER),  # overrun geometry at the padded width
     ],
 )
 def test_fine_kernel_matches_per_line_path_for_widths(width, page_size, fine_channels, colour_source, monkeypatch):

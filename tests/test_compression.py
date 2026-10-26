@@ -24,7 +24,10 @@ from brother_encode import (
     group_bits,
     pack_groups,
 )
-from xl2hb import BPL
+
+# Line width of the encoder vectors below: upstream's A4 width (4768 pixels).
+# The encoders do not depend on the model; HL-3040CN A4 lines are 620 bytes.
+BPL = 596
 
 # ---------------------------------------------------------------------------
 # K-plane: 12-bit read, 12-bit RLE
@@ -243,11 +246,11 @@ class TestKPlaneDecoding:
     )
     def test_decode_k(self, name, data, compressed_hex):
         compressed = bytes.fromhex(compressed_hex)
-        result = decode_plane(compressed, "K")
+        result = decode_plane(compressed, "K", n_bytes=BPL)
         assert result == data
 
     def test_empty_returns_zeros(self):
-        assert decode_plane(b"", "K") == bytes(BPL)
+        assert decode_plane(b"", "K", n_bytes=BPL) == bytes(BPL)
 
 
 class TestYPlaneDecoding:
@@ -257,7 +260,7 @@ class TestYPlaneDecoding:
     )
     def test_decode_y(self, name, data, compressed_hex):
         compressed = bytes.fromhex(compressed_hex)
-        result = decode_plane(compressed, "Y")
+        result = decode_plane(compressed, "Y", n_bytes=BPL)
         assert result == data
 
 
@@ -269,7 +272,7 @@ class TestCPlaneDecoding:
     def test_decode_c(self, name, data, compressed_hex):
         """Decode C-plane and verify re-encoding matches original."""
         compressed = bytes.fromhex(compressed_hex)
-        decoded = decode_c_plane(compressed)
+        decoded = decode_c_plane(compressed, n_bytes=BPL)
         re_encoded = encode_c_plane(decoded)
         assert re_encoded == compressed
 
@@ -281,11 +284,11 @@ class TestMPlane10Decoding:
     )
     def test_decode_m10(self, name, data, compressed_hex):
         compressed = bytes.fromhex(compressed_hex)
-        decoded = decode_m_plane(b"", compressed)
+        decoded = decode_m_plane(b"", compressed, n_bytes=BPL)
         assert decoded == data
 
     def test_empty_returns_zeros(self):
-        assert decode_m_plane(b"", b"") == bytes(BPL)
+        assert decode_m_plane(b"", b"", n_bytes=BPL) == bytes(BPL)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +303,7 @@ class TestRoundtrip:
     )
     def test_k_roundtrip(self, name, data, compressed_hex):
         encoded = encode_plane(data, "K")
-        decoded = decode_plane(encoded, "K")
+        decoded = decode_plane(encoded, "K", n_bytes=BPL)
         assert decoded == data
 
     @pytest.mark.parametrize(
@@ -309,7 +312,7 @@ class TestRoundtrip:
     )
     def test_y_roundtrip(self, name, data, compressed_hex):
         encoded = encode_plane(data, "Y")
-        decoded = decode_plane(encoded, "Y")
+        decoded = decode_plane(encoded, "Y", n_bytes=BPL)
         assert decoded == data
 
     @pytest.mark.parametrize(
@@ -318,7 +321,7 @@ class TestRoundtrip:
     )
     def test_m10_roundtrip(self, name, data, compressed_hex):
         encoded = encode_m_plane_10(data)
-        decoded = decode_m_plane(b"", encoded)
+        decoded = decode_m_plane(b"", encoded, n_bytes=BPL)
         assert decoded == data
 
     @pytest.mark.parametrize(
@@ -328,7 +331,7 @@ class TestRoundtrip:
     def test_c_roundtrip(self, name, data, compressed_hex):
         """C-plane roundtrip: encode → decode → re-encode matches."""
         encoded = encode_c_plane(data)
-        decoded = decode_c_plane(encoded)
+        decoded = decode_c_plane(encoded, n_bytes=BPL)
         re_encoded = encode_c_plane(decoded)
         assert re_encoded == encoded
 
@@ -358,12 +361,13 @@ class TestCaptureCompression:
     the original compressed bytes.
     """
 
-    def test_k_roundtrip_from_capture(self, all_captures):
+    @pytest.mark.parametrize("name", ["a4_black", "gray75_1000"])
+    def test_k_roundtrip_from_capture(self, all_captures, name):
         """Decompress → re-compress → matches capture for K-plane blocks."""
-        cap = all_captures["allblack_1000"]
+        cap = all_captures[name]
 
         k_blocks = [b for b in cap.blocks if b.plane_id == 0]
-        assert k_blocks, "No K-plane blocks found in allblack_1000"
+        assert k_blocks, f"No K-plane blocks found in {name}"
 
         for block in k_blocks:
             for i, entry in enumerate(block.entries):
@@ -438,7 +442,13 @@ class TestFinePatternEncode:
 
 
 class TestFineCodecAgainstBinary:
-    """Vectors computed by brhl4150cdnfilter itself (scripts/native_codec.py)."""
+    """Vectors computed by the original Fine codec itself.
+
+    Upstream ran brhl4150cdnfilter's codec functions in an emulator
+    (scripts/native_codec.py of cl445/brother-hl4150cdn-driver).
+    brhl3040cnfilter's Fine codec is the same code (0x804f398 and
+    0x804f7c8), so the vectors hold for it too.
+    """
 
     def test_white_run_before_high_nibble_byte(self):
         """Two white bytes then 0x40 fold into one 0xA0-class code carrying the run of 2."""

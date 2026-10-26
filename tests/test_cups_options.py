@@ -11,7 +11,6 @@ import pytest
 
 from brfilter import (
     ColorMatching,
-    DuplexMode,
     ImproveOutput,
     InputSlot,
     MediaType,
@@ -27,7 +26,6 @@ class TestCupsOptionsDefaults:
     def test_empty_string(self):
         s = PrintSettings.from_cups_options("")
         assert s.page_size == PageSize.A4
-        assert s.duplex == DuplexMode.NONE
         assert s.copies == 1
 
     def test_copies_from_arg(self):
@@ -54,31 +52,19 @@ class TestCupsOptionsEnums:
         assert s.page_size == expected
 
     @pytest.mark.parametrize(
-        ("option", "expected"),
-        [
-            ("BRDuplex=None", DuplexMode.NONE),
-            ("BRDuplex=DuplexNoTumble", DuplexMode.NO_TUMBLE),
-            ("BRDuplex=DuplexTumble", DuplexMode.TUMBLE),
-            ("Duplex=None", DuplexMode.NONE),
-            ("Duplex=DuplexNoTumble", DuplexMode.NO_TUMBLE),
-            ("Duplex=DuplexTumble", DuplexMode.TUMBLE),
-            ("sides=two-sided-long-edge", DuplexMode.NO_TUMBLE),
-            ("sides=two-sided-short-edge", DuplexMode.TUMBLE),
-            ("sides=one-sided", DuplexMode.NONE),
-            ("sides=two-sided-long-edge Duplex=None", DuplexMode.NONE),  # PPD option wins
-        ],
+        "option",
+        ["Duplex=DuplexNoTumble", "BRDuplex=DuplexTumble", "sides=two-sided-long-edge", "BRSkipBlank=ON"],
     )
-    def test_duplex(self, option, expected):
-        s = PrintSettings.from_cups_options(option)
-        assert s.duplex == expected
+    def test_duplex_and_skip_blank_are_ignored(self, option):
+        """The HL-3040CN has no duplex unit, and Brother's filter no skip blank."""
+        assert PrintSettings.from_cups_options(option) == PrintSettings()
 
     @pytest.mark.parametrize(
         ("option", "expected"),
         [
             ("BRInputSlot=AutoSelect", InputSlot.AUTO),
             ("BRInputSlot=Tray1", InputSlot.TRAY1),
-            ("BRInputSlot=Tray2", InputSlot.TRAY2),
-            ("BRInputSlot=MPTray", InputSlot.MP_TRAY),
+            ("BRInputSlot=Manual", InputSlot.MANUAL),
         ],
     )
     def test_input_slot(self, option, expected):
@@ -103,7 +89,6 @@ class TestCupsOptionsEnums:
             ("BRMediaType=Plain", MediaType.PLAIN),
             ("BRMediaType=Thick", MediaType.THICK),
             ("BRMediaType=Envelope", MediaType.ENVELOPE),
-            ("BRMediaType=Glossy", MediaType.GLOSSY),
             ("BRMediaType=EnvThin", MediaType.ENV_THIN),
             # Brother's own PPD/RC spellings
             ("BRMediaType=BOND", MediaType.BOND),
@@ -156,8 +141,6 @@ class TestCupsOptionsBooleans:
         [
             ("BRTonerSaveMode=ON", "toner_save", True),
             ("BRTonerSaveMode=OFF", "toner_save", False),
-            ("BRSkipBlank=ON", "skip_blank", True),
-            ("BRSkipBlank=OFF", "skip_blank", False),
             ("BRGray=ON", "improve_gray", True),
             ("BRGray=OFF", "improve_gray", False),
             ("BREnhanceBlkPrt=ON", "enhance_black", True),
@@ -220,16 +203,15 @@ class TestCupsOptionsInvalid:
 class TestCupsOptionsMultiple:
     def test_full_options_string(self):
         opts = (
-            "PageSize=Letter BRDuplex=DuplexNoTumble BRResolution=600x2400dpi "
+            "PageSize=Letter BRResolution=600x2400dpi "
             "BRMonoColor=FullColor BRMediaType=Thick BRColorMatching=Vivid "
             "BRGray=ON BREnhanceBlkPrt=ON BRTonerSaveMode=ON "
             "BRImproveOutput=BRLessPaperCurl BRBrightness=5 BRContrast=-3 "
             "BRRed=2 BRGreen=-1 BRBlue=4 BRSaturation=10 "
-            "BRSkipBlank=ON BRReverse=ON BRInputSlot=Tray1"
+            "BRReverse=ON BRInputSlot=Tray1"
         )
         s = PrintSettings.from_cups_options(opts, copies=3)
         assert s.page_size == PageSize.LETTER
-        assert s.duplex == DuplexMode.NO_TUMBLE
         assert s.resolution == Resolution.FINE
         assert s.mono_color == MonoColor.FULL_COLOR
         assert s.media_type == MediaType.THICK
@@ -244,7 +226,6 @@ class TestCupsOptionsMultiple:
         assert s.green == -1
         assert s.blue == 4
         assert s.saturation == 10
-        assert s.skip_blank is True
         assert s.reverse is True
         assert s.input_slot == InputSlot.TRAY1
         assert s.copies == 3
@@ -253,7 +234,7 @@ class TestCupsOptionsMultiple:
 class TestPpdDefaults:
     """CUPS passes only the job's options; the queue's PPD defaults fill the rest."""
 
-    _PPD = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn.ppd"
+    _PPD = Path(__file__).resolve().parent.parent / "cups" / "brhl3040cn.ppd"
 
     def test_reads_defaults_of_shipped_ppd(self):
         defaults = read_ppd_defaults(self._PPD)
@@ -275,13 +256,3 @@ class TestPpdDefaults:
         s = PrintSettings.from_cups_options("BRGray=OFF PageSize=Letter", ppd_defaults=defaults)
         assert s.improve_gray is False
         assert s.page_size == PageSize.LETTER
-
-    def test_ipp_sides_beats_ppd_default_duplex(self):
-        s = PrintSettings.from_cups_options("sides=two-sided-long-edge", ppd_defaults={"Duplex": "None"})
-        assert s.duplex == DuplexMode.NO_TUMBLE
-
-    def test_job_duplex_beats_ipp_sides(self):
-        s = PrintSettings.from_cups_options(
-            "Duplex=DuplexTumble sides=two-sided-long-edge", ppd_defaults={"Duplex": "None"}
-        )
-        assert s.duplex == DuplexMode.TUMBLE

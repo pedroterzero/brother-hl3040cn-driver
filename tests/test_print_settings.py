@@ -1,27 +1,25 @@
 """
 Print settings tests.
 
-Tests PrintSettings defaults, RC file parsing, paper/media configuration,
-and PJL settings propagation.
+PrintSettings defaults, brhl3040cnrc parsing, and the HL-3040CN paper,
+media and PJL tables.
 """
 
-import io
-import tempfile
+from pathlib import Path
 
 import pytest
 
-from brfilter import (
-    DuplexMode,
-    PrintSettings,
-    filter_page,
-    filter_pages,
-)
+from brfilter import MediaType, MonoColor, PrintSettings
+from capture_pages import DEFAULT_RC, PAPER, rc_text
+from settings import MEDIA_SOURCE, InputSlot, PageSize
 from xl2hb import (
+    CUSTOM_MEDIA_SIZE_UNITS,
     MEDIA_SIZE,
     MEDIA_TYPE_STRINGS,
     PAPER_SIZES,
     generate_pjl_header,
     get_image_dimensions,
+    get_image_dimensions_fine,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,20 +35,16 @@ class TestDefaultSettings:
         assert s.input_slot == "AutoSelect"
         assert s.resolution == "Normal"
         assert s.copies == 1
-        assert s.duplex == "None"
+        assert s.collate is False
         assert s.mono_color == "Auto"
         assert s.color_matching == "Normal"
         assert s.improve_gray is False
         assert s.enhance_black is False
         assert s.toner_save is False
         assert s.improve_output == "OFF"
-        assert s.brightness == 0
-        assert s.contrast == 0
-        assert s.red == 0
-        assert s.green == 0
-        assert s.blue == 0
-        assert s.saturation == 0
-        assert s.skip_blank is False
+        assert (s.brightness, s.contrast, s.red, s.green, s.blue, s.saturation) == (0, 0, 0, 0, 0, 0)
+        assert not hasattr(s, "duplex")  # no duplex unit, no skip blank on the HL-3040CN
+        assert not hasattr(s, "skip_blank")
         assert s.reverse is False
 
 
@@ -60,152 +54,195 @@ class TestDefaultSettings:
 
 
 class TestRCFileParsing:
-    def _write_rc(self, content: str) -> str:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".rc", delete=False) as f:
-            f.write(content)
-            return f.name
+    @pytest.fixture
+    def write_rc(self, tmp_path):
+        def write(content: str) -> str:
+            path = tmp_path / "brhl3040cnrc"
+            path.write_text(content)
+            return str(path)
 
-    def test_parse_standard_rc(self):
-        rc = self._write_rc("""\
-[hl4150cdn]
-MediaType=Thick
-PageSize=Letter
-InputSlot=Tray1
-BRResolution=Fine
-Copies=3
-Duplex=DuplexNoTumble
-BRMonoColor=Mono
-BRColorMatching=Vivid
-BRGray=ON
-BREnhanceBlkPrt=ON
-TonerSaveMode=ON
-BRImproveOutput=BRLessPaperCurl
-Brightness=10
-Contrast=-5
-RedKey=3
-GreenKey=-2
-BlueKey=1
-Saturation=8
-BRSkipBlank=ON
-BRReverse=ON
-""")
+        return write
+
+    def test_brothers_default_rc(self, write_rc):
+        """Brother's shipped rc: Copies=0, everything else matches the dataclass defaults."""
+        s = PrintSettings.from_rc_file(write_rc(rc_text({})))
+        assert s == PrintSettings(copies=0)
+
+    def test_parse_standard_rc(self, write_rc):
+        rc = write_rc(
+            rc_text(
+                {
+                    "MediaType": "Thick",
+                    "PageSize": "Letter",
+                    "InputSlot": "Tray1",
+                    "BRResolution": "Fine",
+                    "Copies": "3",
+                    "Collate": "ON",
+                    "BRReverse": "ON",
+                    "BRMonoColor": "Mono",
+                    "BRColorMatching": "Vivid",
+                    "BRGray": "ON",
+                    "BREnhanceBlkPrt": "ON",
+                    "TonerSaveMode": "ON",
+                    "BRImproveOutput": "BRLessPaperCurl",
+                    "Brightness": "10",
+                    "Contrast": "-5",
+                    "RedKey": "3",
+                    "GreenKey": "-2",
+                    "BlueKey": "1",
+                    "Saturation": "8",
+                }
+            )
+        )
         s = PrintSettings.from_rc_file(rc)
         assert s.media_type == "Thick"
         assert s.page_size == "Letter"
         assert s.input_slot == "Tray1"
         assert s.resolution == "Fine"
         assert s.copies == 3
-        assert s.duplex == "DuplexNoTumble"
+        assert s.collate is True
+        assert s.reverse is True
         assert s.mono_color == "Mono"
         assert s.color_matching == "Vivid"
         assert s.improve_gray is True
         assert s.enhance_black is True
         assert s.toner_save is True
         assert s.improve_output == "BRLessPaperCurl"
-        assert s.brightness == 10
-        assert s.contrast == -5
-        assert s.red == 3
-        assert s.green == -2
-        assert s.blue == 1
-        assert s.saturation == 8
-        assert s.skip_blank is True
-        assert s.reverse is True
+        assert (s.brightness, s.contrast, s.red, s.green, s.blue, s.saturation) == (10, -5, 3, -2, 1, 8)
 
-    def test_parse_minimal_rc(self):
-        rc = self._write_rc("[hl4150cdn]\nMediaType=Envelope\n")
-        s = PrintSettings.from_rc_file(rc)
-        assert s.media_type == "Envelope"
+    def test_parse_minimal_rc(self, write_rc):
+        s = PrintSettings.from_rc_file(write_rc("[HL3040CN]\nMediaType=Env\n"))
+        assert s.media_type == MediaType.ENVELOPE
         assert s.page_size == "A4"  # default preserved
+        assert s.copies == 1
+
+    def test_empty_rc_gives_defaults(self, write_rc):
+        assert PrintSettings.from_rc_file(write_rc("")) == PrintSettings()
+
+    @pytest.mark.parametrize(
+        ("key", "value", "attr", "expected"),
+        [
+            ("MediaType", "BOND", "media_type", MediaType.BOND),
+            ("MediaType", "Env", "media_type", MediaType.ENVELOPE),
+            ("MediaType", "PostCard", "media_type", MediaType.POSTCARD),
+            ("PageSize", "B5", "page_size", PageSize.ISOB5),
+            ("PageSize", "B6", "page_size", PageSize.ISOB6),
+            ("PageSize", "PostCard", "page_size", PageSize.POSTCARD),
+            ("PageSize", "BrA4Long", "page_size", PageSize.BR_A4_LONG),
+            ("BRMonoColor", "Color", "mono_color", MonoColor.FULL_COLOR),
+        ],
+    )
+    def test_brother_spellings(self, write_rc, key, value, attr, expected):
+        """brhl3040cnrc spells these differently from this driver's PPD."""
+        s = PrintSettings.from_rc_file(write_rc(rc_text({key: value})))
+        assert getattr(s, attr) == expected
+
+    @pytest.mark.parametrize("value", ["FullColor", "Colour", "color", ""])
+    def test_mono_color_is_read_strictly(self, write_rc, value):
+        """Brother's filter treats any BRMonoColor but Auto/Color/Mono as Auto (capture mixed_fullcolor)."""
+        s = PrintSettings.from_rc_file(write_rc(rc_text({"BRMonoColor": value})))
+        assert s.mono_color == MonoColor.AUTO
+
+    @pytest.mark.parametrize(("key", "value"), [("MediaType", "Glossy"), ("InputSlot", "Tray2"), ("PageSize", "A3")])
+    def test_values_the_hl3040cn_does_not_have(self, write_rc, key, value):
+        with pytest.raises(ValueError, match=value):
+            PrintSettings.from_rc_file(write_rc(rc_text({key: value})))
 
     def test_parse_original_rc(self):
-        """Parse the RC file of Brother's driver (extracted by scripts/extract_blobs.sh)."""
-        from pathlib import Path
-
+        """Parse the rc file of Brother's driver (extracted by scripts/extract_blobs.sh)."""
         rc_path = (
             Path(__file__).resolve().parent.parent
-            / ".brother-blobs/extracted/usr/local/Brother/Printer/hl4150cdn/inf/brhl4150cdnrc"
+            / ".brother-blobs/extracted/opt/brother/Printers/hl3040cn/inf/brhl3040cnrc"
         )
         if not rc_path.exists():
             pytest.skip("Brother driver not extracted; run scripts/extract_blobs.sh")
-        s = PrintSettings.from_rc_file(str(rc_path))
-        assert s.page_size == "Letter"  # US default
-        assert s.media_type == "Plain"
-        assert s.copies == 1
+        assert rc_path.read_text().split() == rc_text({}).split()
+        assert PrintSettings.from_rc_file(str(rc_path)) == PrintSettings(copies=0)
+
+    def test_default_rc_keys(self):
+        """The keys of brhl3040cnrc: no Duplex, BRSkipBlank or Glossy on this model."""
+        assert "Duplex" not in DEFAULT_RC
+        assert "BRSkipBlank" not in DEFAULT_RC
+        assert {"Copies", "Collate", "BRReverse"} <= set(DEFAULT_RC)
 
 
 # ---------------------------------------------------------------------------
 # Paper sizes
 # ---------------------------------------------------------------------------
 
+# rc PageSize -> PageSize value of this driver, where they differ.
+_DRIVER_NAME = {"B5": "ISOB5", "B6": "ISOB6", "PostCard": "Postcard"}
+
+
+def _pixels_to_tenth_mm(px: int) -> int:
+    """brhl3040cnfilter's CustomMediaSize: px -> whole points -> 1/120 inch -> 600 dpi -> 0.1 mm."""
+    return px * 72 // 600 * 120 // 72 * 5 * 25400 // 60000
+
 
 class TestPaperSizes:
-    @pytest.mark.parametrize(
-        ("name", "expected_wh"),
-        [
-            ("A4", (4760, 6812)),
-            ("Letter", (4900, 6400)),
-            ("Legal", (4900, 8200)),
-            ("Executive", (4148, 6100)),
-            ("A5", (3296, 4760)),
-            ("JISB5", (4100, 5872)),
-            ("Postcard", (2164, 3288)),
-            ("EnvDL", (2400, 4996)),
-            ("EnvC5", (3624, 5208)),
-            ("Env10", (2272, 5500)),
-            ("EnvMonarch", (2124, 4300)),
-        ],
-    )
-    def test_paper_dimensions(self, name, expected_wh):
-        assert PAPER_SIZES[name] == expected_wh
+    def test_every_rc_size_has_a_page_size(self):
+        assert {PageSize(name).value for name in PAPER} == {s.value for s in PageSize}
 
-    @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
-    def test_image_dimensions_32bit_aligned(self, name):
-        """Image width must be rounded up to 32-pixel boundary."""
-        sw, _sh = get_image_dimensions(name)
-        assert sw % 32 == 0, f"{name}: source_width {sw} not 32-aligned"
+    @pytest.mark.parametrize("rc_name", list(PAPER))
+    def test_paper_is_the_whole_sheet_of_paperinfij2(self, rc_name):
+        assert PAPER_SIZES[PageSize(rc_name)] == PAPER[rc_name]
+
+    @pytest.mark.parametrize("rc_name", list(PAPER))
+    def test_image_dimensions(self, rc_name):
+        """Width rounded up to 32 pixels, height = paper height in whole points at 600 dpi."""
+        w, h = PAPER[rc_name]
+        size = PageSize(rc_name)
+        assert get_image_dimensions(size) == ((w + 31) // 32 * 32, h * 72 // 600 * 600 // 72)
+        assert get_image_dimensions_fine(size) == ((w + 7) // 8 * 8, h * 72 // 600 * 600 // 72)
 
     @pytest.mark.parametrize(
-        ("name", "height", "media_size"),
+        ("name", "media_size"),
         [
-            ("A4", 6808, 2),
-            ("Letter", 6400, 0),
-            ("Legal", 8200, 1),
-            ("Executive", 6100, 3),
-            ("A5", 4758, 16),
-            ("PRA5Rotated", 3300, b"A5L"),
-            ("A6", 3300, 17),
-            ("ISOB5", 5700, 12),
-            ("ISOB6", 3950, b"B6"),
-            ("JISB5", 5866, 11),
-            ("JISB6", 4100, b"JISB6"),
-            ("EnvDL", 4991, 9),
-            ("EnvC5", 5200, 8),
-            ("Env10", 5500, 6),
-            ("EnvMonarch", 4300, 7),
-            ("Br3x5", 2800, b"3x5"),
-            ("FanFoldGermanLegal", 7600, b"Folio"),
-            ("EnvPRC5Rotated", 2400, b"DL Long Edge"),
-            ("Postcard", 3283, 14),
-            ("EnvYou4", 5341, b"Envelope #4"),
-            ("EnvChou3", 5341, b"Envelope MAX"),
+            ("A4", 2),
+            ("Letter", 0),
+            ("Legal", 1),
+            ("Executive", 3),
+            ("A5", 16),
+            ("PRA5Rotated", (2059, 1466)),
+            ("A6", 17),
+            ("ISOB5", 12),
+            ("ISOB6", b"B6"),
+            ("JISB5", 11),
+            ("JISB6", (1276, 1820)),
+            ("EnvDL", 9),
+            ("EnvC5", 8),
+            ("Env10", 6),
+            ("EnvMonarch", 7),
+            ("Br3x5", b"3x5"),
+            ("BrA4Long", b"A4Long"),
+            ("FanFoldGermanLegal", b"Folio"),
+            ("EnvPRC5Rotated", b"DL Long Edge"),
+            ("Postcard", 14),
+            ("EnvYou4", b"Envelope #4"),
+            ("EnvChou3", b"Envelope MAX"),
         ],
     )
-    def test_height_and_media_size_match_original(self, name, height, media_size):
-        """Source height and MediaSize as brhl4150cdnfilter writes them."""
-        assert get_image_dimensions(name)[1] == height
+    def test_media_size(self, name, media_size):
+        """MediaSize as brhl3040cnfilter writes it: enum, name string, or CustomMediaSize."""
         assert MEDIA_SIZE[name] == media_size
+
+    @pytest.mark.parametrize("name", ["PRA5Rotated", "JISB6"])
+    def test_custom_media_size_from_paperinfij2(self, name):
+        w, h = PAPER_SIZES[name]
+        assert MEDIA_SIZE[name] == (_pixels_to_tenth_mm(w), _pixels_to_tenth_mm(h))
+        assert CUSTOM_MEDIA_SIZE_UNITS == 2
 
 
 # ---------------------------------------------------------------------------
-# Media types
+# Media types and sources
 # ---------------------------------------------------------------------------
 
 
 class TestMediaTypes:
-    """Wire strings as brhl4150cdnfilter writes them for each RC MediaType."""
+    """Wire strings as brhl3040cnfilter writes them for each MediaType."""
 
     @pytest.mark.parametrize(
-        ("name", "expected_prefix"),
+        ("name", "expected"),
         [
             ("Plain", b"dRegular"),
             ("Thin", b"dThin"),
@@ -218,11 +255,25 @@ class TestMediaTypes:
             ("Recycled", b"dRecycled"),
             ("Postcard", b"dPostcard"),
             ("Label", b"dLabel"),
-            ("Glossy", b"dGlossy"),
         ],
     )
-    def test_media_type_strings(self, name, expected_prefix):
-        assert MEDIA_TYPE_STRINGS[name] == expected_prefix
+    def test_media_type_strings(self, name, expected):
+        assert MEDIA_TYPE_STRINGS[name] == expected
+
+    def test_every_media_type_has_a_wire_string(self):
+        assert set(MEDIA_TYPE_STRINGS) == {m.value for m in MediaType}
+
+    def test_no_glossy(self):
+        assert "Glossy" not in MEDIA_TYPE_STRINGS
+        with pytest.raises(ValueError, match="Glossy"):
+            MediaType("Glossy")
+
+
+class TestMediaSources:
+    def test_hl3040cn_sources(self):
+        """Auto 1, Tray 1 1001, manual feed 2; no Tray 2 or MP tray."""
+        assert MEDIA_SOURCE == {InputSlot.AUTO: 1, InputSlot.TRAY1: 1001, InputSlot.MANUAL: 2}
+        assert {s.value for s in InputSlot} == {"AutoSelect", "Tray1", "Manual"}
 
 
 # ---------------------------------------------------------------------------
@@ -232,86 +283,13 @@ class TestMediaTypes:
 
 class TestPJLSettingsPropagation:
     def test_less_paper_curl(self):
-        header = generate_pjl_header(less_paper_curl=True)
-        assert b"LESSPAPERCURL=ON" in header
+        assert b"LESSPAPERCURL=ON" in generate_pjl_header(less_paper_curl=True)
 
     def test_fix_intensity(self):
-        header = generate_pjl_header(fix_intensity=True)
-        assert b"FIXINTENSITYUP=ON" in header
+        assert b"FIXINTENSITYUP=ON" in generate_pjl_header(fix_intensity=True)
 
     def test_resolution_600(self):
-        header = generate_pjl_header(resolution=600)
-        assert b"RESOLUTION=600" in header
-
-
-# ---------------------------------------------------------------------------
-# Duplex
-# ---------------------------------------------------------------------------
-
-
-class TestDuplex:
-    @staticmethod
-    def _make_tiny_page(duplex: DuplexMode) -> bytes:
-        """Run filter_page with a 1x1 white pixel and return the output."""
-        settings = PrintSettings(duplex=duplex)
-        pixel_data = b"\xff\xff\xff"  # 1x1 white
-        buf = io.BytesIO()
-        filter_page(1, 1, pixel_data, settings, buf)
-        return buf.getvalue()
-
-    def test_simplex_sets_simplex_page_mode(self):
-        """Simplex writes SimplexPageMode (attr 0x34) = 0, like Brother's filter."""
-        data = self._make_tiny_page(DuplexMode.NONE)
-        assert b"\xc0\x00\xf8\x34\x43" in data
-        assert b"\xf8\x35\x43" not in data
-
-    def test_duplex_long_edge_sets_mode(self):
-        """DuplexNoTumble writes DuplexPageMode (attr 0x35) = 0x00."""
-        data = self._make_tiny_page(DuplexMode.NO_TUMBLE)
-        assert b"\xc0\x00\xf8\x35\x43" in data
-
-    def test_duplex_short_edge_sets_mode(self):
-        """DuplexTumble writes DuplexPageMode (attr 0x35) = 0x81."""
-        data = self._make_tiny_page(DuplexMode.TUMBLE)
-        assert b"\xc0\x81\xf8\x35\x43" in data
-
-    def test_duplex_sends_two_pages(self):
-        """Duplex mode should produce front and back in one session."""
-        settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE)
-        pages = [
-            (1, 1, b"\xff\xff\xff"),  # front (white)
-            (1, 1, b"\xff\xff\xff"),  # back (white)
-        ]
-        buf = io.BytesIO()
-        filter_pages(pages, settings, buf)
-        data = buf.getvalue()
-
-        # Verify exactly one session
-        # BeginSession: ...F8 89 41 (after ATTR_UNITS_PER_MEASURE)
-        assert data.count(b"\xf8\x89\x41") == 1, "Expected exactly 1 BeginSession"
-        # EndSession: standalone 0x42 byte after CloseDataSource (0x49)
-        assert b"\x49\x42" in data, "Expected EndSession after CloseDataSource"
-
-        # Two BeginPage opcodes, each preceded by DuplexPageMode=0x00
-        assert data.count(b"\xc0\x00\xf8\x35\x43") == 2, "Expected 2 duplex BeginPage opcodes"
-        # Only the back page carries the long-edge back-side marker
-        assert data.count(b"\xc0\x10\xf8\x81\xc0\x00\xf8\x28") == 1
-
-
-# ---------------------------------------------------------------------------
-# Copies
-# ---------------------------------------------------------------------------
-
-
-class TestCopies:
-    def test_copies_propagated_to_page(self):
-        """copies > 1 should set PageCopies attribute in BeginImage and EndPage."""
-        settings = PrintSettings(copies=3)
-        buf = io.BytesIO()
-        filter_page(1, 1, b"\xff\xff\xff", settings, buf)
-        data = buf.getvalue()
-        # attr 0x31 (PageCopies) with uint16 value 3: c1 03 00 f8 31
-        assert b"\xc1\x03\x00\xf8\x31" in data
+        assert b"RESOLUTION=600" in generate_pjl_header(resolution=600)
 
 
 # ---------------------------------------------------------------------------
@@ -321,16 +299,13 @@ class TestCopies:
 
 class TestTonerSave:
     def test_toner_save_reduces_coverage(self):
-        """Brother's toner-save dither tables put fewer dots on a mid-gray row."""
-        from pathlib import Path
-
+        """Brother's toner-save dither tables (-TS_cache08) put fewer dots on a mid-gray row."""
         import numpy as np
 
         from dither import dither_channel_1bpp_arr, load_dither_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
         width = 256
-        # Mid-gray row: ink level ~127 (pixel brightness 128 -> ink 127)
         row = np.full(width, 128, dtype=np.uint8)
 
         normal_ch = load_dither_tables(lut_dir)
@@ -338,7 +313,6 @@ class TestTonerSave:
 
         normal_dots = 0
         ts_dots = 0
-        # Dither multiple rows to average out pattern effects
         for y in range(32):
             normal_out = dither_channel_1bpp_arr(row, y, width, normal_ch["K"])
             ts_out = dither_channel_1bpp_arr(row, y, width, ts_ch["K"])

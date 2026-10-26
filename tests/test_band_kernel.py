@@ -7,16 +7,23 @@ import pytest
 
 import color_lut
 import pipeline
-from fixture_utils import read_fixture
+from capture_pages import A4_H as _A4_H
+from capture_pages import A4_W as _A4_W
+from capture_pages import MANIFEST
+from fixture_utils import assert_bytes_equal, capture_settings, freeze_printlog, read_capture, render_capture
 from pipeline import filter_pages
-from settings import ColorMatching, DuplexMode, MediaType, PrintSettings
-from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
+from settings import ColorMatching, MonoColor, PrintSettings, Resolution
 from transforms import color_table
 
 if not pipeline.HAS_BAND_KERNEL:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
 
-_A4_W, _A4_H = 4760, 6812
+# Captures the Normal-mode colour kernel renders (Fine and Mono pages take other paths).
+_KERNEL_CAPTURES = [
+    name
+    for name, capture in MANIFEST.items()
+    if capture.overrides.get("BRResolution") != "Fine" and capture.overrides.get("BRMonoColor") != "Mono"
+]
 
 
 @pytest.fixture(scope="module")
@@ -70,7 +77,7 @@ def _page(width: int, height: int, seed: int) -> bytes:
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
     monkeypatch.setattr(pipeline, "HAS_BAND_KERNEL", kernel)
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
     return out.getvalue()
@@ -87,7 +94,7 @@ _SETTINGS = {
     "toner_save": PrintSettings(toner_save=True),
     "improve_gray": PrintSettings(improve_gray=True),
     "enhance_black": PrintSettings(enhance_black=True),
-    "glossy_vivid": PrintSettings(media_type=MediaType.GLOSSY, color_matching=ColorMatching.VIVID),
+    "vivid_improve_gray": PrintSettings(color_matching=ColorMatching.VIVID, improve_gray=True),
     "cm_none_adjusted": PrintSettings(color_matching=ColorMatching.NONE, brightness=10, saturation=-10),
 }
 
@@ -124,9 +131,9 @@ def test_kernel_matches_per_line_path_for_page_sizes(width, height, monkeypatch)
     assert _render(pages, PrintSettings(), kernel=True, threads=2, monkeypatch=monkeypatch) == expected
 
 
-def test_kernel_matches_for_long_edge_back_pages_and_streamed_blocks(monkeypatch):
-    """Back pages are reversed views (negative row stride); streamed blocks are cropped views."""
-    settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE)
+def test_kernel_matches_for_reversed_pages_and_streamed_blocks(monkeypatch):
+    """BRReverse pages are reversed views (negative row stride); streamed blocks are cropped views."""
+    settings = PrintSettings(reverse=True)
     raw = [_page(_A4_W, _A4_H, seed=s) for s in (3, 4)]
     pages = [(_A4_W, _A4_H, data) for data in raw]
     expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
@@ -143,7 +150,7 @@ def test_kernel_matches_for_long_edge_back_pages_and_streamed_blocks(monkeypatch
 
 
 def test_kernel_reports_short_pages(monkeypatch):
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "2")
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", "2")
     rows = np.zeros((300, _A4_W * 3), np.uint8)
     with pytest.raises(ValueError, match="page ended after 300 rows"):
         filter_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
@@ -163,22 +170,20 @@ def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
 
 
 def test_render_threads_from_environment(monkeypatch):
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "0")
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", "0")
     assert pipeline._render_threads() == 0
-    monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS")
+    monkeypatch.delenv("BRHL3040CN_RENDER_THREADS")
     assert 1 <= pipeline._render_threads() <= 3
 
 
-@pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS)
-def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
-    """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
+@pytest.mark.parametrize("name", _KERNEL_CAPTURES)
+def test_kernel_matches_brother_captures(name, real_lut, tmp_path, monkeypatch):
+    """With the real inverse LUT the banded render is byte-exact against brhl3040cnfilter."""
+    settings = capture_settings(name, tmp_path)
+    assert settings.resolution == Resolution.NORMAL
+    assert settings.mono_color != MonoColor.MONO
     table = color_table(settings)
     assert pipeline._band_kernel_colour(table, pipeline._init_channels(settings), is_fine=False) is not None
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "3")
-    _run_settings_variant(name, settings)
-
-
-def test_kernel_matches_brother_duplex_capture(real_lut, monkeypatch):
-    expected = read_fixture("duplex4_long_edge.xl2hb")
-    settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE)
-    assert _render(_duplex_test_pages(), settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
+    monkeypatch.setenv("BRHL3040CN_RENDER_THREADS", "3")
+    freeze_printlog(monkeypatch, name)
+    assert_bytes_equal(render_capture(name, tmp_path, settings), read_capture(name), name)

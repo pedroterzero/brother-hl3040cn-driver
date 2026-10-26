@@ -1,4 +1,4 @@
-"""Helpers in the CUPS filter script (loaded from cups/brhl4150cdn-filter)."""
+"""Helpers in the CUPS filter script (loaded from cups/brhl3040cn-filter)."""
 
 import importlib.machinery
 import importlib.util
@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-_FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn-filter"
+_FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl3040cn-filter"
 
 
 @pytest.fixture(scope="module")
 def cups_filter():
-    loader = importlib.machinery.SourceFileLoader("brhl4150cdn_filter", str(_FILTER))
+    loader = importlib.machinery.SourceFileLoader("brhl3040cn_filter", str(_FILTER))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -19,7 +19,7 @@ def cups_filter():
     return module
 
 
-_PPD = _FILTER.parent / "brhl4150cdn.ppd"
+_PPD = _FILTER.parent / "brhl3040cn.ppd"
 
 
 def _ppd_paper_dimensions() -> dict[str, tuple[int, int]]:
@@ -33,29 +33,35 @@ def _ppd_paper_dimensions() -> dict[str, tuple[int, int]]:
     return dims
 
 
-def test_paper_points_match_the_ppd(cups_filter):
-    """Ghostscript renders the page at the size the PPD advertises, for every PageSize."""
+def test_ppd_page_sizes_are_the_driver_page_sizes():
+    """Every PageSize of the PPD has a paperinfij2 size, and the other way round."""
     from settings import PageSize
+    from xl2hb import PAPER_SIZES
 
     ppd = _ppd_paper_dimensions()
-    assert set(ppd) == {size.value for size in PageSize}
-    assert ppd == cups_filter.PAPER_POINTS
+    assert set(ppd) == {size.value for size in PageSize} == set(PAPER_SIZES)
 
 
 @pytest.mark.parametrize("page_size", sorted(_ppd_paper_dimensions()))
-def test_gs_command_sets_the_page_size_in_points(cups_filter, monkeypatch, page_size):
+def test_gs_command_renders_the_whole_sheet(cups_filter, monkeypatch, page_size):
+    """Ghostscript renders at the HL-3040CN paperinfij2 size, as Brother's psconvertij2."""
+    from xl2hb import PAPER_SIZES
+
     monkeypatch.setattr(cups_filter, "find_gs", lambda: "gs")
     cmd = cups_filter.build_gs_command("job.ps", page_size)
-    width, height = _ppd_paper_dimensions()[page_size]
-    assert f"-dDEVICEWIDTHPOINTS={width}" in cmd
-    assert f"-dDEVICEHEIGHTPOINTS={height}" in cmd
-    assert not any(arg.startswith("-sPAPERSIZE") for arg in cmd)
+    width, height = PAPER_SIZES[page_size]
+    assert f"-g{width}x{height}" in cmd
+    assert "-r600" in cmd
+    assert not any(arg.startswith(("-sPAPERSIZE", "-dDEVICEWIDTHPOINTS")) for arg in cmd)
     assert cmd[-1] == "job.ps"
+    assert cups_filter.PRINTABLE_OFFSET == (0, 0)
 
 
-@pytest.mark.parametrize("page_size", ["Executive", "Env10", "EnvMonarch", "A4"])
+@pytest.mark.parametrize("page_size", ["Executive", "Env10", "EnvMonarch", "A4", "PRA5Rotated"])
 def test_ghostscript_renders_the_requested_size(cups_filter, tmp_path, page_size):
-    """Executive, Com-10 and Monarch came out as Letter while gs got paper names."""
+    """Ghostscript's PPM has exactly the paperinfij2 size."""
+    from xl2hb import PAPER_SIZES
+
     if cups_filter.shutil.which("gs") is None:
         pytest.skip("Ghostscript not installed")
     job = tmp_path / "job.ps"
@@ -72,5 +78,4 @@ def test_ghostscript_renders_the_requested_size(cups_filter, tmp_path, page_size
         proc.wait()
     fields = [line for line in header.split(b"\n")[:4] if not line.startswith(b"#")]
     width, height = (int(v) for v in fields[1].split())
-    w_pt, h_pt = cups_filter.PAPER_POINTS[page_size]
-    assert (width, height) == (round(w_pt * 600 / 72), round(h_pt * 600 / 72))
+    assert (width, height) == PAPER_SIZES[page_size]
