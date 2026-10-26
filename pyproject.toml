@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Claas Flint" },  # brother-hl4150cdn-driver, which this fork is based on
+    { name = "Claas Flint", email = "claas.flint@akator.de" },  # brother-hl4150cdn-driver, which this fork is based on
     { name = "pedroterzero", email = "72469659+pedroterzero@users.noreply.github.com" },  # HL-3040CN port
 ]
 keywords = ["brother", "hl3040cn", "cups", "printer-driver", "xl2hb", "pcl-xl"]
