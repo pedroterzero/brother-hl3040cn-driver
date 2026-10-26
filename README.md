@@ -35,7 +35,9 @@ from `hl3040cnlpr-1.1.2-1`) for all 99 reference captures in
 
 The CUPS filter, the CLI, the pure-Python code and the Cython modules all
 produce the same bytes. An earlier build of this port with the same
-output is in daily use on an HL-3040CN.
+output has printed test pages, documents and AirPrint jobs from a phone
+on a real HL-3040CN through CUPS on a Raspberry Pi 5 (Normal mode; Fine
+mode is byte-identical but has not been checked on paper yet).
 
 ## Requirements
 
