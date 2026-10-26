@@ -1,7 +1,8 @@
 """Differential harness for Fine mode: original filter vs. the Python pipeline.
 
-Renders a test page (or job), prints it with Brother's brhl4150cdnfilter
-(i386, in Docker) and with `pipeline.filter_pages`, then compares the two
+Renders a test page (or job), prints it with Brother's brhl3040cnfilter
+(i386, in a Docker container without network) and with
+`pipeline.filter_pages`, then compares the two
 XL2HB streams: PJL header, block layout, and every compressed scanline
 entry per plane. It decodes the original's entries
 (`brother_decode.decode_fine_plane`) and checks two things separately:
@@ -12,13 +13,14 @@ Normal mode (`--rc BRResolution=Normal`) get the whole-stream check and the
 offset of the first difference only.
 
 The original's output is cached by a hash of pages and rc file, so reruns
-only cost the Python side.
+only cost the Python side. The PJL PRINTLOG timestamp (item 2) is masked
+in both streams.
 
     uv run python scripts/fine_diff.py solid:0,255,255 --lines 8
     uv run python scripts/fine_diff.py hramp --lines 64 --dump build/fine-diff
     uv run python scripts/fine_diff.py noise --rc Saturation=20
     uv run python scripts/fine_diff.py edges --paper Letter
-    uv run python scripts/fine_diff.py bars --pages 4 --rc Duplex=DuplexNoTumble
+    uv run python scripts/fine_diff.py bars --pages 3 --rc BRReverse=ON
 
 Patterns: white, black, solid:R,G,B, hramp (gray ramp across the width),
 steps (16 gray steps across the width), bars (C/M/Y/R/G/B/K/gray rows),
@@ -32,6 +34,7 @@ Needs Docker and the blobs from scripts/extract_blobs.sh.
 import argparse
 import hashlib
 import io
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -48,18 +51,28 @@ from brother_decode import decode_fine_plane  # noqa: E402
 from extract_fixtures import PLANE_NAMES, parse_xl2hb_capture  # noqa: E402
 from fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
 from settings import PrintSettings, Resolution  # noqa: E402
-from xl2hb import PAPER_SIZES  # noqa: E402
+from xl2hb import PAPER_SIZES, get_image_dimensions_fine  # noqa: E402
 
-BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "usr" / "local" / "Brother"
-RC_TEMPLATE = BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "brhl4150cdnrc"
+# The HL-3040CN package installs under /opt/brother (the filter reads its
+# dither tables from /opt/brother/Printers/hl3040cn/inf/lut).
+BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "opt" / "brother"
+RC_TEMPLATE = BROTHER_DIR / "Printers" / "hl3040cn" / "inf" / "brhl3040cnrc"
 CACHE_DIR = ROOT / "build" / "fine-diff-cache"
 DOCKER_IMAGE = "i386/debian:bookworm-slim"
-FILTER = "/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
-PAPERINF = "/usr/local/Brother/Printer/hl4150cdn/inf/paperinfij2"
+FILTER = "/opt/brother/Printers/hl3040cn/lpd/brhl3040cnfilter"
+PAPERINF = "/opt/brother/Printers/hl3040cn/inf/paperinfij2"
 
 # A4 at 600 dpi as the original reads it; rows missing at EOF print black there.
 A4_W, A4_H = PAPER_SIZES["A4"]
-FINE_ROW_BYTES = A4_W // 2  # 4bpp, A4
+FINE_ROW_BYTES = get_image_dimensions_fine("A4")[0] // 2  # 4bpp, A4
+
+# PJL PRINTLOG item 2 is the time the job was rendered.
+_TIMESTAMP = re.compile(rb"(@PJL PRINTLOG ITEM = 2,)[^\n]*")
+
+
+def mask_timestamp(data: bytes) -> bytes:
+    """Replace the PRINTLOG timestamp, the only part of the stream that depends on the clock."""
+    return _TIMESTAMP.sub(rb"\1<TIME>", data, count=1)
 
 
 # ---------------------------------------------------------------------------
@@ -143,17 +156,21 @@ def ppm_bytes(page: npt.NDArray[np.uint8]) -> bytes:
     return b"P6\n%d %d\n255\n" % (page.shape[1], page.shape[0]) + page.tobytes()
 
 
-# rc values this driver spells differently from Brother's CUPS wrapper
-# (brhl4150cdnfunc); the original treats an unknown value as the default.
-BROTHER_RC_VALUES = {"MediaType": {"Bond": "BOND", "Envelope": "Env"}}
+# rc values this driver spells differently from Brother's rc file
+# (brhl3040cnfunc); the original treats an unknown value as the default.
+# PrintSettings.from_rc_file reads Brother's spellings too.
+BROTHER_RC_VALUES = {
+    "MediaType": {"Bond": "BOND", "Envelope": "Env", "Postcard": "PostCard"},
+    "PageSize": {"ISOB5": "B5", "ISOB6": "B6", "Postcard": "PostCard"},
+    "BRMonoColor": {"FullColor": "Color"},
+}
 
 
-def make_rc(overrides: list[str], *, brother_spelling: bool = True) -> str:
+def make_rc(overrides: list[str]) -> str:
     """Return the default rc file with Fine, A4 and the given Key=Value overrides.
 
-    Overrides use this driver's PPD spellings. With `brother_spelling` they
-    are written as Brother's CUPS wrapper writes them (MediaType=BOND, Env),
-    for the original; without, as PrintSettings reads them.
+    Overrides may use this driver's PPD spellings; they are written as
+    Brother's rc file spells them (MediaType=BOND, BRMonoColor=Color, ...).
 
     Raises:
         SystemExit: If an override is not Key=Value or names an unknown key.
@@ -164,7 +181,7 @@ def make_rc(overrides: list[str], *, brother_spelling: bool = True) -> str:
         if not sep:
             msg = f"--rc expects Key=Value, got {item!r}"
             raise SystemExit(msg)
-        values[key] = BROTHER_RC_VALUES.get(key, {}).get(value, value) if brother_spelling else value
+        values[key] = BROTHER_RC_VALUES.get(key, {}).get(value, value)
     lines = []
     for template_line in RC_TEMPLATE.read_text().splitlines():
         key, sep, _ = template_line.partition("=")
@@ -181,7 +198,7 @@ def make_rc(overrides: list[str], *, brother_spelling: bool = True) -> str:
 
 
 def run_original(ppm: bytes, rc: str) -> bytes:
-    """Run brhl4150cdnfilter in Docker, cached by input hash.
+    """Run brhl3040cnfilter in Docker, cached by input hash.
 
     Returns:
         The original's XL2HB output.
@@ -201,8 +218,8 @@ def run_original(ppm: bytes, rc: str) -> bytes:
     (work / "page.ppm").write_bytes(ppm)
     (work / "rc").write_text(rc)
     cmd = [
-        "docker", "run", "--rm", "--platform", "linux/386",
-        "-v", f"{BROTHER_DIR}:/usr/local/Brother:ro",
+        "docker", "run", "--rm", "--network", "none", "--platform", "linux/386",
+        "-v", f"{BROTHER_DIR}:/opt/brother:ro",
         "-v", f"{work}:/w",
         DOCKER_IMAGE,
         "sh", "-c", f"{FILTER} -pi {PAPERINF} -rc /w/rc < /w/page.ppm > /w/out.xl2hb",
@@ -267,11 +284,7 @@ def run_python(
     try:
         out = io.BytesIO()
         job: list[tuple[int, int, pipeline.PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
-        if settings.skip_blank:
-            job = list(pipeline.drop_blank_pages(job))
-        # Production prints nothing at all when every page is blank.
-        if job:
-            pipeline.filter_pages(job, settings, out)
+        pipeline.filter_pages(job, settings, out)
     finally:
         pipeline.HAS_FINE_BAND_KERNEL = has_kernel
         dither_fns[True] = dither
@@ -477,25 +490,17 @@ def main() -> int:
     size = PAPER_SIZES[args.paper]
     pages = [make_page(args.pattern, args.top + 37 * i, args.lines, args.seed + i, size) for i in range(args.pages)]
     overrides = [f"PageSize={args.paper}", *args.rc]
-    # The same settings, each driver with its own spelling of the values.
+    # Both drivers read the same rc file.
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    rc = make_rc(overrides)
     rc_path = CACHE_DIR / "last.rc"
-    rc_path.write_text(make_rc(overrides, brother_spelling=False))
+    rc_path.write_text(rc)
     settings = PrintSettings.from_rc_file(str(rc_path))
     if settings.resolution != Resolution.FINE:
         print("note: rc is not set to Fine, comparing Normal mode")
 
-    expected = run_original(b"".join(map(ppm_bytes, pages)), make_rc(overrides))
-    actual, _ = run_python(pages, settings)
-    if not actual:
-        # Every page was skipped as blank: compare the original's empty
-        # session with the one filter_pages would write for no pages.
-        empty = io.BytesIO()
-        pipeline.filter_pages([], settings, empty)
-        same = expected == empty.getvalue()
-        print(f"all pages blank: python prints nothing; original {len(expected)} bytes,", end=" ")
-        print("an empty session" if same else "NOT an empty session")
-        return 0 if same else 1
+    expected = mask_timestamp(run_original(b"".join(map(ppm_bytes, pages)), rc))
+    actual = mask_timestamp(run_python(pages, settings)[0])
     if args.save:
         args.save.mkdir(parents=True, exist_ok=True)
         (args.save / "original.xl2hb").write_bytes(expected)
@@ -505,6 +510,7 @@ def main() -> int:
     if per_line and actual != expected:
         # Re-render per line to see each encoder's input; it must match the kernel's output.
         recorded, calls = run_python(pages, settings, record=True)
+        recorded = mask_timestamp(recorded)
         if recorded != actual:
             at = first_diff(recorded, actual)
             print(f"WARNING: the per-line path differs from the band kernel at byte {at};")
