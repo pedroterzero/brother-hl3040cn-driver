@@ -19,7 +19,8 @@ class MediaType(StrEnum):
     """Paper/media type selection (maps to XL2HB MediaType attribute).
 
     Values are this driver's PPD choices; Brother's own spellings from
-    brhl4150cdnrc and its PPD (BOND, Env, PostCard) are accepted as aliases.
+    brhl3040cnrc and its PPD (BOND, Env, PostCard) are accepted as aliases.
+    The HL-3040CN has no glossy media.
     """
 
     PLAIN = "Plain"
@@ -33,7 +34,6 @@ class MediaType(StrEnum):
     RECYCLED = "Recycled"
     POSTCARD = "Postcard"
     LABEL = "Label"
-    GLOSSY = "Glossy"
 
     @classmethod
     def _missing_(cls, value: object) -> "MediaType | None":
@@ -70,11 +70,12 @@ class PageSize(StrEnum):
     ENV_DL_LONG_EDGE = "EnvPRC5Rotated"
     ENV_YOU4 = "EnvYou4"
     ENV_CHOU3 = "EnvChou3"
+    BR_A4_LONG = "BrA4Long"
 
     @classmethod
     def _missing_(cls, value: object) -> "PageSize | None":
-        # PPD keys of Brother's own cupswrapper PPD (its B5/B6 are ISO sizes).
-        alias = {"A5Rotated": cls.A5_ROTATED, "B5": cls.ISOB5, "B6": cls.ISOB6}
+        # Keys of Brother's own rc file and cupswrapper PPD (its B5/B6 are ISO sizes).
+        alias = {"A5Rotated": cls.A5_ROTATED, "B5": cls.ISOB5, "B6": cls.ISOB6, "PostCard": cls.POSTCARD}
         return alias.get(value) if isinstance(value, str) else None
 
 
@@ -85,20 +86,19 @@ class Resolution(StrEnum):
     FINE = "Fine"
 
 
-class DuplexMode(StrEnum):
-    """Duplex printing mode (maps to XL2HB DuplexPageMode attribute)."""
-
-    NONE = "None"
-    NO_TUMBLE = "DuplexNoTumble"
-    TUMBLE = "DuplexTumble"
-
-
 class MonoColor(StrEnum):
-    """Color mode: Auto (detect), FullColor, or Mono (K-only grayscale)."""
+    """Color mode: Auto (detect), Color, or Mono (K-only grayscale).
+
+    The rc file spells full colour "Color"; the PPD choice is "FullColor".
+    """
 
     AUTO = "Auto"
-    FULL_COLOR = "FullColor"
+    FULL_COLOR = "Color"
     MONO = "Mono"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "MonoColor | None":
+        return cls.FULL_COLOR if value == "FullColor" else None
 
 
 class ColorMatching(StrEnum):
@@ -122,8 +122,6 @@ class InputSlot(StrEnum):
 
     AUTO = "AutoSelect"
     TRAY1 = "Tray1"
-    TRAY2 = "Tray2"
-    MP_TRAY = "MPTray"
     MANUAL = "Manual"
 
 
@@ -132,14 +130,14 @@ class InputSlot(StrEnum):
 
 @dataclass
 class PrintSettings:
-    """Print settings, corresponding to brhl4150cdnrc."""
+    """Print settings, corresponding to brhl3040cnrc."""
 
     media_type: MediaType = MediaType.PLAIN
     page_size: PageSize = PageSize.A4
     input_slot: InputSlot = InputSlot.AUTO
     resolution: Resolution = Resolution.NORMAL
     copies: int = 1
-    duplex: DuplexMode = DuplexMode.NONE
+    collate: bool = False
     mono_color: MonoColor = MonoColor.AUTO
     color_matching: ColorMatching = ColorMatching.NORMAL
     improve_gray: bool = False
@@ -152,12 +150,11 @@ class PrintSettings:
     green: int = 0
     blue: int = 0
     saturation: int = 0
-    skip_blank: bool = False
     reverse: bool = False
 
     @classmethod
     def from_rc_file(cls, path: str) -> Self:
-        """Read settings from brhl4150cdnrc.
+        """Read settings from brhl3040cnrc.
 
         Returns:
             Populated settings instance (defaults if the file has no sections).
@@ -173,8 +170,11 @@ class PrintSettings:
         settings.input_slot = InputSlot(s.get("InputSlot", settings.input_slot))
         settings.resolution = Resolution(s.get("BRResolution", settings.resolution))
         settings.copies = int(s.get("Copies", str(settings.copies)))
-        settings.duplex = DuplexMode(s.get("Duplex", settings.duplex))
-        settings.mono_color = MonoColor(s.get("BRMonoColor", settings.mono_color))
+        settings.collate = s.get("Collate", "OFF") == "ON"
+        # The original reads BRMonoColor strictly: anything but Auto/Color/Mono
+        # (including the PPD spelling FullColor) silently means Auto.
+        mono = s.get("BRMonoColor", settings.mono_color)
+        settings.mono_color = MonoColor(mono) if mono in {m.value for m in MonoColor} else MonoColor.AUTO
         settings.color_matching = ColorMatching(s.get("BRColorMatching", settings.color_matching))
         settings.improve_gray = s.get("BRGray", "OFF") == "ON"
         settings.enhance_black = s.get("BREnhanceBlkPrt", "OFF") == "ON"
@@ -186,7 +186,6 @@ class PrintSettings:
         settings.green = int(s.get("GreenKey", "0"))
         settings.blue = int(s.get("BlueKey", "0"))
         settings.saturation = int(s.get("Saturation", "0"))
-        settings.skip_blank = s.get("BRSkipBlank", "OFF") == "ON"
         settings.reverse = s.get("BRReverse", "OFF") == "ON"
         return settings
 
@@ -197,11 +196,11 @@ class PrintSettings:
         """Parse a CUPS option string into PrintSettings.
 
         CUPS passes options as space-separated Key=Value pairs, e.g.:
-        ``"PageSize=A4 Duplex=DuplexNoTumble BRBrightness=5"``. It only
-        passes what the job carries, so the queue's PPD defaults
-        (`ppd_defaults`, see `read_ppd_defaults`) apply first and the job's
-        options override them, as Brother's cupswrapper does. An IPP
-        `sides` in the job still beats a PPD default duplex.
+        ``"PageSize=A4 BRMonoColor=Mono BRBrightness=5"``. It only passes
+        what the job carries, so the queue's PPD defaults (`ppd_defaults`,
+        see `read_ppd_defaults`) apply first and the job's options override
+        them, as Brother's cupswrapper does. The HL-3040CN has no duplex unit,
+        so IPP `sides` is ignored.
 
         Returns:
             Populated settings instance with the parsed values.
@@ -219,8 +218,6 @@ class PrintSettings:
         # Enum options
         enum_map: dict[str, tuple[str, type]] = {
             "PageSize": ("page_size", PageSize),
-            "BRDuplex": ("duplex", DuplexMode),  # pre-2026-09 PPD name
-            "Duplex": ("duplex", DuplexMode),
             "BRInputSlot": ("input_slot", InputSlot),
             "BRMonoColor": ("mono_color", MonoColor),
             "BRMediaType": ("media_type", MediaType),
@@ -234,14 +231,6 @@ class PrintSettings:
                 except ValueError:
                     logger.warning("Unknown %s value %r, keeping default", cups_key, opts[cups_key])
 
-        # IPP "sides" when the job has no PPD duplex option.
-        if "Duplex" not in job_opts and "BRDuplex" not in job_opts and "sides" in opts:
-            sides = _SIDES_TO_DUPLEX.get(opts["sides"])
-            if sides is None:
-                logger.warning("Unknown sides value %r, keeping default", opts["sides"])
-            else:
-                settings.duplex = sides
-
         # Resolution: "600x2400dpi" -> Fine, else Normal
         if "BRResolution" in opts:
             settings.resolution = Resolution.FINE if opts["BRResolution"] == "600x2400dpi" else Resolution.NORMAL
@@ -249,7 +238,6 @@ class PrintSettings:
         # Boolean options (ON/OFF)
         bool_map: dict[str, str] = {
             "BRTonerSaveMode": "toner_save",
-            "BRSkipBlank": "skip_blank",
             "BRGray": "improve_gray",
             "BREnhanceBlkPrt": "enhance_black",
             "BRReverse": "reverse",
@@ -295,26 +283,11 @@ def read_ppd_defaults(path: str | Path) -> dict[str, str]:
     return dict(_PPD_DEFAULT.findall(text))
 
 
-_SIDES_TO_DUPLEX = {
-    "one-sided": DuplexMode.NONE,
-    "two-sided-long-edge": DuplexMode.NO_TUMBLE,
-    "two-sided-short-edge": DuplexMode.TUMBLE,
-}
-
-# XL2HB DuplexPageMode values as written by Brother's filter; None = simplex.
-DUPLEX_MAP: dict[DuplexMode, int | None] = {
-    DuplexMode.NONE: None,
-    DuplexMode.NO_TUMBLE: 0x00,
-    DuplexMode.TUMBLE: 0x81,
-}
-
-# XL2HB MediaSource values as brhl4150cdnfilter writes them. The tray goes
+# XL2HB MediaSource values as brhl3040cnfilter writes them. The tray goes
 # only into BeginPage; the original never emits @PJL SET SOURCETRAY for
 # this model.
 MEDIA_SOURCE: dict[InputSlot, int] = {
     InputSlot.AUTO: 1,
     InputSlot.TRAY1: 1001,
-    InputSlot.TRAY2: 1005,
-    InputSlot.MP_TRAY: 1004,
     InputSlot.MANUAL: 2,
 }

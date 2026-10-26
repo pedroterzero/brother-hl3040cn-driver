@@ -1,4 +1,4 @@
-"""Ordered dithering for the Brother HL-4150CDN.
+"""Ordered dithering for the Brother HL-3040CN.
 
 Converts continuous-tone intensity values to 1bpp or 4bpp planes.
 Loads BRCD cache files (per-channel threshold tables) when available
@@ -9,8 +9,8 @@ compared against a threshold matrix tiled to the page width, vectorised
 with numpy (or `_dither_fast`).
 
 4bpp mode: 16 intensity levels (0-15) per pixel, nibble-packed output,
-used in Fine mode. The original (`dither_ordered_4ch_4bpp` @ 08061404)
-reads the same BRCD data as one byte per pixel: level `ink` is a
+used in Fine mode. The original (`dither_ordered_4ch_4bpp`, 0x804ed38 in
+brhl3040cnfilter) reads the same BRCD data as one byte per pixel: level `ink` is a
 matrix of ready-made nibbles, indexed by page row and column. Without
 BRCD tables, a Bayer threshold matrix interpolates between levels.
 """
@@ -209,7 +209,10 @@ def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
     )
 
 
-# BRCD filename templates: f"{prefix}-{ch}{suffix}_cache09.bin"
+# BRCD filename templates: f"{prefix}-{ch}{suffix}_{_BRCD_CACHE}.bin". The
+# HL-3040CN package ships the `_cache08` set (brhl3040cnfilter never selects
+# its `_cache08b` files).
+_BRCD_CACHE = "cache08"
 _BRCD_PREFIX = {False: "0600", True: "capt"}  # keyed by `fine`
 _BRCD_SUFFIX = {False: "", True: "-TS"}  # keyed by `toner_save`
 
@@ -231,7 +234,7 @@ def load_brcd_tables(
     lut_path = Path(lut_dir)
     channels: dict[str, DitherChannel] = {}
     for ch in "KCMY":
-        fpath = lut_path / f"{prefix}-{ch.lower()}{suffix}_cache09.bin"
+        fpath = lut_path / f"{prefix}-{ch.lower()}{suffix}_{_BRCD_CACHE}.bin"
         if not fpath.exists():
             logger.debug("BRCD file not found: %s", fpath)
             return None
@@ -278,7 +281,7 @@ def _warn_bayer_fallback(lut_dir: str, *, toner_save: bool) -> None:
     if key in _bayer_fallback_warned:
         return
     _bayer_fallback_warned.add(key)
-    variant = f"0600-*{_BRCD_SUFFIX[toner_save]}_cache09.bin"
+    variant = f"0600-*{_BRCD_SUFFIX[toner_save]}_{_BRCD_CACHE}.bin"
     logger.warning(
         "Dither tables %s missing in %s (run scripts/extract_blobs.sh); "
         "using a generated Bayer matrix, output will differ from the original driver",

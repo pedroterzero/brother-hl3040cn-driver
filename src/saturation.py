@@ -6,10 +6,11 @@ interpolation, and gray/black/white pixel skipping.
 """
 
 import functools
-from collections.abc import Buffer
 
 import numpy as np
 import numpy.typing as npt
+
+from _compat import Buffer
 
 # Divisor that scales the [-20, +20] saturation knob into per-channel deltas.
 _SCALE_FACTOR = 50.0

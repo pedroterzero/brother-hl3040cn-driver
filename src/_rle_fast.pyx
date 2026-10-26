@@ -224,7 +224,7 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
     keep the two in sync. `wbuf` is scratch space for at least n + 2 words.
     """
     cdef int ctx_size = 5 if bits == 10 else 3
-    cdef Py_ssize_t lit_overflow = 0xFFF if bits == 10 else 0x7FF
+    cdef Py_ssize_t lit_overflow = 0x7FF if bits == 20 else 0xFFF
     cdef bint skip_counts_current = bits == 10
     cdef unsigned int ctx[5]
     cdef Py_ssize_t wi = 0, match_count = 0, run_len = 0, lit_n, k

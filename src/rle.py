@@ -254,7 +254,7 @@ CONFIG_12BIT = SwRleConfig(
     emit_run=_make_emit_run_nbit(12),
     emit_literal=_make_emit_literal_nbit(12),
     eof=0xFFFFFFFF,
-    literal_overflow=0x7FF,
+    literal_overflow=0xFFF,  # K/Y encoders 0x8053788 / 0x8052654; only C uses 0x7FF
     skip_counts_current=False,
 )
 

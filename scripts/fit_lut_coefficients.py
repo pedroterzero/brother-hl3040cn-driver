@@ -1,4 +1,4 @@
-"""Fit a parametric 3-layer decomposition to the Brother HL-4150CDN color LUT.
+"""Fit a parametric 3-layer decomposition to a Brother colour LUT (src/color_data).
 
 Decomposes the 17x17x17 -> CMYK LUT into three physically interpretable layers:
   1. 1D tone curves: per-channel transfer functions (4 CMYK x 3 RGB x 17 points)
@@ -9,7 +9,8 @@ Joint least-squares fit of all layers simultaneously.
 
 This is the first-pass fit that color_lut_gen.py started from, not the
 generator of its shipped coefficients: those use 7x7x7 (rgb) and 9x9x9
-(srgb) residual grids plus sparse corrections. The script is kept as a record of the method.
+(srgb) residual grids plus sparse corrections, fitted upstream to the
+HL-4150CDN grids. The script is kept as a record of the method.
 
 Usage:
     uv run python scripts/fit_lut_coefficients.py

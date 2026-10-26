@@ -1,4 +1,4 @@
-"""XL2HB protocol emitter for the Brother HL-4150CDN.
+"""XL2HB protocol emitter for the Brother HL-3040CN.
 
 Wraps compressed plane data in the XL2HB byte stream (a PCL-XL
 variant) the printer accepts. Operators, attribute IDs, MediaSize
@@ -7,6 +7,7 @@ codes, and the band-config encoding are documented inline.
 
 import logging
 import struct
+import time
 from typing import BinaryIO
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,13 @@ ATTR_DATA_ORG = 0x82
 ATTR_ORIENTATION = 0x28
 ATTR_MEDIA_SOURCE = 0x26
 ATTR_MEDIA_SIZE = 0x25
+ATTR_CUSTOM_MEDIA_SIZE = 0x2F
+ATTR_CUSTOM_MEDIA_SIZE_UNITS = 0x30
 ATTR_MEDIA_TYPE = 0x27
 ATTR_SIMPLEX_PAGE_MODE = 0x34
-ATTR_DUPLEX_PAGE_MODE = 0x35
-# Brother emits attr 0x81 = 0x10 ahead of every long-edge duplex back page.
+# Attr 0x81 = 0x10 ahead of a page marks it as sent bottom-up. The duplex
+# models use it for long-edge back pages; the HL-3040CN (simplex only) for
+# every page of a BRReverse job.
 ATTR_DUPLEX_BACK_SIDE = 0x81
 DUPLEX_BACK_SIDE_MARKER = 0x10
 ATTR_PAGE_ORIGIN = 0x2A
@@ -78,9 +82,10 @@ OP_END_IMAGE = 0xB2
 # ---------------------------------------------------------------------------
 # MediaSize enum
 # ---------------------------------------------------------------------------
-# BeginPage MediaSize as brhl4150cdnfilter writes it: a PCL XL media-size
-# enum, or for sizes without one a name string.
-MEDIA_SIZE: dict[str, int | bytes] = {
+# BeginPage MediaSize as brhl3040cnfilter writes it: a PCL XL media-size
+# enum, for sizes without one a name string, or for A5 long edge and JIS B6
+# a CustomMediaSize (x, y) in tenths of a millimetre.
+MEDIA_SIZE: dict[str, int | bytes | tuple[int, int]] = {
     "Letter": 0,
     "Legal": 1,
     "A4": 2,
@@ -94,73 +99,54 @@ MEDIA_SIZE: dict[str, int | bytes] = {
     "Postcard": 14,
     "A5": 16,
     "A6": 17,
-    "PRA5Rotated": b"A5L",
+    "PRA5Rotated": (2059, 1466),
     "ISOB6": b"B6",
-    "JISB6": b"JISB6",
+    "JISB6": (1276, 1820),
     "Br3x5": b"3x5",
+    "BrA4Long": b"A4Long",
     "FanFoldGermanLegal": b"Folio",
     "EnvPRC5Rotated": b"DL Long Edge",
     "EnvYou4": b"Envelope #4",
     "EnvChou3": b"Envelope MAX",
 }
 
+# CustomMediaSizeUnits for the (x, y) sizes above: tenths of a millimetre.
+CUSTOM_MEDIA_SIZE_UNITS = 2
+
 # ---------------------------------------------------------------------------
-# Paper sizes: pixels at 600 DPI from paperinfij2, and the printable height
-# in points (ury - lly) from Brother's ImagingArea file.
+# Paper sizes: pixels at 600 DPI from the HL-3040CN paperinfij2 (the whole
+# sheet; this model has no ImagingArea file).
 # ---------------------------------------------------------------------------
 PAPER_SIZES = {
-    "A4": (4760, 6812),
-    "Letter": (4900, 6400),
-    "Legal": (4900, 8200),
-    "Executive": (4148, 6100),
-    "A5": (3296, 4760),
-    "PRA5Rotated": (4756, 3300),
-    "A6": (2272, 3300),
-    "ISOB5": (3956, 5708),
-    "ISOB6": (2748, 3956),
-    "JISB5": (4100, 5872),
-    "JISB6": (2824, 4100),
-    "EnvDL": (2400, 4996),
-    "EnvC5": (3624, 5208),
-    "Env10": (2272, 5500),
-    "EnvMonarch": (2124, 4300),
-    "Br3x5": (1600, 2800),
-    "FanFoldGermanLegal": (4900, 7600),
-    "EnvPRC5Rotated": (5000, 2400),
-    "Postcard": (2164, 3288),
-    "EnvYou4": (2280, 5348),
-    "EnvChou3": (2632, 5348),
-}
-
-IMAGING_HEIGHT_PT = {
-    "A4": 818,
-    "Letter": 768,
-    "Legal": 984,
-    "Executive": 732,
-    "A5": 571,
-    "PRA5Rotated": 396,
-    "A6": 396,
-    "ISOB5": 685,
-    "ISOB6": 475,
-    "JISB5": 705,
-    "JISB6": 492,
-    "EnvDL": 600,
-    "EnvC5": 625,
-    "Env10": 660,
-    "EnvMonarch": 516,
-    "Br3x5": 336,
-    "FanFoldGermanLegal": 912,
-    "EnvPRC5Rotated": 288,
-    "Postcard": 395,
-    "EnvYou4": 642,
-    "EnvChou3": 642,
+    "A4": (4958, 6981),
+    "Letter": (5100, 6564),
+    "Legal": (5100, 8364),
+    "Executive": (4350, 6264),
+    "A5": (3500, 4922),
+    "PRA5Rotated": (4868, 3474),
+    "A6": (2475, 3464),
+    "ISOB5": (4158, 5872),
+    "ISOB6": (2958, 4122),
+    "JISB5": (4300, 6039),
+    "JISB6": (3017, 4300),
+    "EnvDL": (2600, 5164),
+    "EnvC5": (3825, 5372),
+    "Env10": (2475, 5664),
+    "EnvMonarch": (2325, 4464),
+    "Br3x5": (1800, 2964),
+    "BrA4Long": (4958, 9531),
+    "FanFoldGermanLegal": (5100, 7764),
+    "EnvPRC5Rotated": (5200, 2564),
+    "Postcard": (2367, 3456),
+    "EnvYou4": (2483, 5516),
+    "EnvChou3": (2832, 5516),
 }
 
 # Fine mode uses the same paper sizes as Normal — only the dithering
 # depth, band config, and PJL APTMODE differ.
 
 # MediaType strings (each name is prefixed with 'd' on the wire), as
-# brhl4150cdnfilter writes them for the rc values Brother's CUPS wrapper
+# brhl3040cnfilter writes them for the rc values Brother's CUPS wrapper
 # passes (MediaType=BOND, Env, ...). It sends Bond paper as Transparency.
 MEDIA_TYPE_STRINGS = {
     "Plain": b"dRegular",
@@ -174,7 +160,6 @@ MEDIA_TYPE_STRINGS = {
     "Recycled": b"dRecycled",
     "Postcard": b"dPostcard",
     "Label": b"dLabel",
-    "Glossy": b"dGlossy",
 }
 
 # ---------------------------------------------------------------------------
@@ -199,10 +184,10 @@ PLANE_PARAMS_FINE = {
 # Plane flush order: C, M, Y, K.
 FLUSH_ORDER = (1, 2, 3, 0)
 
-# Bytes per line of an A4 Normal-mode plane (4768 pixels / 8): the
-# PlaneBuffer default and the reference width of the tests. The pipeline
-# passes the width of the actual paper size.
-BPL = 596
+# Bytes per line of an A4 Normal-mode plane (HL-3040CN: 4960 pixels / 8):
+# the PlaneBuffer default and the reference width of the tests. The
+# pipeline passes the width of the actual paper size.
+BPL = 620
 
 # PlaneBuffer sizing constants.
 PLANE_BUF_INIT_FREE = 0x7FF2  # 32754 bytes: 0x8000 minus the 14-byte plane header
@@ -299,17 +284,15 @@ def emit_extended_data(buf: bytearray, data: bytes) -> None:
 def image_height(page_size: str) -> int:
     """Rows of the page image, as the original computes its band height.
 
-    The printable height in points, capped at the paper height in whole
-    points, converted to 600 dpi: `min(ury - lly, paper_h * 72 // 600) *
-    600 // 72`. Verified against brhl4150cdnfilter for every paper size
-    (A4 6812 -> 6808, Letter 6400 -> 6400, EnvDL 4996 -> 4991).
+    The paper height in whole points, converted back to 600 dpi:
+    `paper_h * 72 // 600 * 600 // 72`. Verified against brhl3040cnfilter
+    for all 22 paper sizes (A4 6981 -> 6975, JISB6 4300 -> 4300).
 
     Returns:
         Source height in rows.
     """
     _, ph = PAPER_SIZES[page_size]
-    points = min(IMAGING_HEIGHT_PT[page_size], ph * 72 // 600)
-    return points * 600 // 72
+    return ph * 72 // 600 * 600 // 72
 
 
 def get_image_dimensions(page_size: str) -> tuple[int, int]:
@@ -326,9 +309,8 @@ def get_image_dimensions_fine(page_size: str) -> tuple[int, int]:
     """Return (source_width, source_height) for Fine mode BeginImage.
 
     Fine mode rounds the paper width up to 8 pixels instead of 32
-    (raster_encode.c:352): A4 4760 stays 4760 (Normal 4768), Letter 4900
-    becomes 4904. Height is the same as Normal. Verified against
-    brhl4150cdnfilter for all 21 paper sizes.
+    (A4 4958 -> 4960, Letter 5100 -> 5104). Height is the same as Normal.
+    Verified against brhl3040cnfilter (fine_* captures).
     """
     pw, _ = PAPER_SIZES[page_size]
     return (pw + 7) & ~7, image_height(page_size)
@@ -589,14 +571,13 @@ class XL2HBWriter:
         media_source: int = 1,
         orientation: int = 0,
         media_type: str = "Plain",
-        duplex_mode: int | None = None,
         back_side_marker: bool = False,
     ) -> None:
-        """Emit BeginPage with media size, source, type, and simplex/duplex mode.
+        """Emit BeginPage with media size, source, type and SimplexPageMode=0.
 
-        `duplex_mode` None writes SimplexPageMode=0; otherwise DuplexPageMode
-        carries the value (0x00 long edge, 0x81 short edge, as Brother's filter).
-        `back_side_marker` prefixes the long-edge back-page marker attribute.
+        The HL-3040CN has no duplex unit: brhl3040cnfilter always writes
+        SimplexPageMode. `back_side_marker` prefixes the bottom-up marker
+        attribute (BRReverse).
         """
         if back_side_marker:
             emit_ubyte_attr(self.buf, DUPLEX_BACK_SIDE_MARKER, ATTR_DUPLEX_BACK_SIDE)
@@ -609,7 +590,10 @@ class XL2HBWriter:
         if size is None:
             logger.warning("Unknown media size %r, defaulting to A4", media_size)
             size = 2
-        if isinstance(size, bytes):
+        if isinstance(size, tuple):
+            emit_uint16_xy_attr(self.buf, *size, ATTR_CUSTOM_MEDIA_SIZE)
+            emit_ubyte_attr(self.buf, CUSTOM_MEDIA_SIZE_UNITS, ATTR_CUSTOM_MEDIA_SIZE_UNITS)
+        elif isinstance(size, bytes):
             emit_ubyte_array_attr(self.buf, size, ATTR_MEDIA_SIZE)
         else:
             emit_ubyte_attr(self.buf, size, ATTR_MEDIA_SIZE)
@@ -618,15 +602,12 @@ class XL2HBWriter:
             logger.warning("Unknown media type %r, defaulting to Regular", media_type)
             type_str = b"dRegular"
         emit_ubyte_array_attr(self.buf, type_str, ATTR_MEDIA_TYPE)
-        if duplex_mode is None:
-            emit_ubyte_attr(self.buf, 0, ATTR_SIMPLEX_PAGE_MODE)
-        else:
-            emit_ubyte_attr(self.buf, duplex_mode, ATTR_DUPLEX_PAGE_MODE)
+        emit_ubyte_attr(self.buf, 0, ATTR_SIMPLEX_PAGE_MODE)
         emit_opcode(self.buf, OP_BEGIN_PAGE)
         self._flush()
 
-    def write_set_page_origin(self, x: int = 100, y: int = 100) -> None:
-        """Emit SetPageOrigin (default 100,100 = printable area offset)."""
+    def write_set_page_origin(self, x: int = 0, y: int = 0) -> None:
+        """Emit SetPageOrigin (0,0 on the HL-3040CN: the image covers the whole sheet)."""
         emit_sint16_xy_attr(self.buf, x, y, ATTR_PAGE_ORIGIN)
         emit_opcode(self.buf, OP_SET_PAGE_ORIGIN)
         self._flush()
@@ -698,6 +679,24 @@ class XL2HBWriter:
 # PJL header/footer
 # ---------------------------------------------------------------------------
 
+JOB_NAME = "Print Job"
+LOGIN_USER = "anonymous"
+_WEEKDAYS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _printlog_timestamp() -> str:
+    """PRINTLOG item 2 as brhl3040cnfilter formats it: "%s,%d %s %d %d:%d:%d" of gmtime().
+
+    Returns:
+        The timestamp, unpadded, e.g. "Mon,26 Oct 2026 20:36:0".
+    """
+    t = time.gmtime()
+    return (
+        f"{_WEEKDAYS[(t.tm_wday + 1) % 7]},{t.tm_mday} {_MONTHS[t.tm_mon - 1]} {t.tm_year} "
+        f"{t.tm_hour}:{t.tm_min}:{t.tm_sec}"
+    )
+
 
 def generate_pjl_header(
     resolution: int = 600,
@@ -716,11 +715,23 @@ def generate_pjl_header(
     pjl.c. The PAGEPROTECT, RET, SOURCETRAY and MANUALDPX commands it also
     knows are never sent for this model.
 
+    brhl3040cnfilter adds a job block after the UEL: JOB NAME, four
+    PRINTLOG items (item 2 is the gmtime() timestamp, unpadded) and the
+    string code set and login user. User and job name are constants in
+    the original ("anonymous", "Print Job").
+
     Returns:
         Encoded PJL header bytes (ASCII).
     """
     lines = [
         "\x1b%-12345X@PJL \n",
+        f'@PJL JOB NAME="{JOB_NAME}"\n',
+        "@PJL PRINTLOG ITEM = 1,PRINTER\n",
+        f"@PJL PRINTLOG ITEM = 2,{_printlog_timestamp()}\n",
+        f"@PJL PRINTLOG ITEM = 3,{LOGIN_USER}\n",
+        "@PJL PRINTLOG ITEM = 4,Linux\n",
+        "@PJL SET STRINGCODESET=HPROMAN8\n",
+        f'@PJL SET LOGINUSER="{LOGIN_USER}"\n',
         f"@PJL SET ECONOMODE={'ON' if economode else 'OFF'}\n",
         f"@PJL SET RENDERMODE={'COLOR' if color else 'GRAYSCALE'}\n",
         f"@PJL SET COLORADAPT={'ON' if color and color_adapt else 'OFF'}\n",
@@ -739,9 +750,9 @@ def generate_pjl_header(
 
 
 def generate_pjl_footer() -> bytes:
-    """Generate the PJL footer: two UEL escapes, no @PJL RESET.
+    """Generate the PJL footer: UEL, EOJ for the job opened in the header, UEL.
 
     Returns:
         Encoded PJL footer bytes.
     """
-    return b"\x1b%-12345X\x1b%-12345X"
+    return f'\x1b%-12345X@PJL EOJ NAME="{JOB_NAME}"\n\x1b%-12345X'.encode("ascii")

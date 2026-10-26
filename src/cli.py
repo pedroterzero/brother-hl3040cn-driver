@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import BinaryIO
 
 from color_lut import INVERSE_LUT_DIR, write_inverse_luts
-from pipeline import chain_peeked, drop_blank_pages, filter_pages
+from pipeline import chain_peeked, filter_pages
 from ppm import read_ppm
-from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
+from settings import MonoColor, PageSize, PrintSettings, Resolution
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ def main(argv: list[str] | None = None) -> None:
     All pages of a concatenated PPM stream (as Ghostscript writes it) are
     rendered into one XL2HB session, like the CUPS filter does.
     """
-    parser = argparse.ArgumentParser(description="Brother HL-4150CDN filter (PPM -> XL2HB)")
-    parser.add_argument("--rc", "-r", help="Path to RC file (brhl4150cdnrc)", default=None)
+    parser = argparse.ArgumentParser(description="Brother HL-3040CN filter (PPM -> XL2HB)")
+    parser.add_argument("--rc", "-r", help="Path to RC file (brhl3040cnrc)", default=None)
     parser.add_argument("--paper", "-p", help="Paper size (e.g. A4, Letter)", default=None)
     parser.add_argument("--mono", "-m", action="store_true", help="Print monochrome")
     parser.add_argument("--toner-save", "-t", action="store_true", help="Toner save mode")
@@ -48,7 +48,6 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Fine mode (600x2400 dpi): byte-identical to the original filter, not verified on the printer yet",
     )
-    parser.add_argument("--duplex", choices=["none", "long", "short"], default="none")
     parser.add_argument("--debug", "-d", action="store_true", help="Debug output to stderr")
     parser.add_argument(
         "--precompute-lut",
@@ -82,10 +81,6 @@ def main(argv: list[str] | None = None) -> None:
         settings.resolution = Resolution.FINE
     if args.toner_save:
         settings.toner_save = True
-    if args.duplex == "long":
-        settings.duplex = DuplexMode.NO_TUMBLE
-    elif args.duplex == "short":
-        settings.duplex = DuplexMode.TUMBLE
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.WARNING,
@@ -100,16 +95,6 @@ def main(argv: list[str] | None = None) -> None:
     if first is None:
         logger.error("No PPM data on stdin")
         sys.exit(1)
-    pages = chain_peeked(first, pages)
-    del first
-
-    if settings.skip_blank:
-        pages = drop_blank_pages(pages)
-
-    first = next(pages, None)
-    if first is None:
-        logger.info("All pages blank, nothing to print")
-        return
     pages = chain_peeked(first, pages)
     del first
     output = sys.stdout.buffer

@@ -1,7 +1,11 @@
-"""Parametric color data generation for Brother HL-4150CDN.
+"""Parametric colour data, a fallback for missing calibration tables.
 
 Generates the color lookup tables and interpolation tables from a compact
-parametric description instead of binary data files.
+parametric description instead of binary data files. The coefficients were
+fitted upstream to the HL-4150CDN's Match Monitor and Vivid grids, so for
+the HL-3040CN they only approximate the colours; run
+scripts/extract_blobs.sh for output identical to Brother's filter. The
+interpolation tables are the same on both models.
 
 The 17x17x17 CMYK color LUT is reconstructed from a 3-layer decomposition:
   1. 1D tone curves: per-channel transfer functions (4x3x17 = 204 params)

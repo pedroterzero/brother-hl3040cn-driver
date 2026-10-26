@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Install the open-source Brother HL-4150CDN CUPS driver.
-# Requires: sudo, Python 3.13+, Ghostscript
+# Install the open-source Brother HL-3040CN CUPS driver.
+# Requires: sudo, Python 3.11+, Ghostscript
 #
 set -euo pipefail
 
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Installation paths
-LIB_DIR="/usr/local/lib/brhl4150cdn"
+LIB_DIR="/usr/local/lib/brhl3040cn"
 VENV_DIR="$LIB_DIR/.venv"
 
 # CUPS paths (Linux). macOS is not supported: its CUPS only runs filters from
@@ -69,15 +69,15 @@ fi
 echo "Checking dependencies..."
 
 if ! command -v python3 &>/dev/null; then
-    echo "Error: python3 not found. Please install Python 3.13+."
+    echo "Error: python3 not found. Please install Python 3.11+."
     exit 1
 fi
 
 PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
 PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-if [[ $PY_MAJOR -lt 3 ]] || [[ $PY_MAJOR -eq 3 && $PY_MINOR -lt 13 ]]; then
-    echo "Error: Python 3.13+ required, found $PY_VERSION"
+if [[ $PY_MAJOR -lt 3 ]] || [[ $PY_MAJOR -eq 3 && $PY_MINOR -lt 11 ]]; then
+    echo "Error: Python 3.11+ required, found $PY_VERSION"
     exit 1
 fi
 echo "  Python $PY_VERSION: OK"
@@ -113,7 +113,7 @@ fi
 # Create virtual environment with dependencies
 echo "Creating virtual environment at $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install --quiet "numpy>=2.5.3"  # keep in sync with pyproject.toml
+"$VENV_DIR/bin/pip" install --quiet "numpy>=2"  # newest NumPy that supports this Python
 
 # Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
 # matching, each with and without improve gray). Replaces per-pixel tetrahedral
@@ -151,21 +151,21 @@ echo "Installing CUPS filter to $CUPS_FILTER_DIR..."
 mkdir -p "$CUPS_FILTER_DIR"
 
 # Create a wrapper script that activates the venv
-cat > "$CUPS_FILTER_DIR/brhl4150cdn-filter" << 'WRAPPER_EOF'
+cat > "$CUPS_FILTER_DIR/brhl3040cn-filter" << 'WRAPPER_EOF'
 #!/bin/bash
-# CUPS filter wrapper for Brother HL-4150CDN (Open Source)
+# CUPS filter wrapper for Brother HL-3040CN (Open Source)
 # Activates the venv and runs the Python filter.
-LIB_DIR="/usr/local/lib/brhl4150cdn"
+LIB_DIR="/usr/local/lib/brhl3040cn"
 VENV_DIR="$LIB_DIR/.venv"
 export PATH="$VENV_DIR/bin:$PATH"
 export PYTHONPATH="$LIB_DIR"
-exec "$VENV_DIR/bin/python3" "$LIB_DIR/brhl4150cdn-filter.py" "$@"
+exec "$VENV_DIR/bin/python3" "$LIB_DIR/brhl3040cn-filter.py" "$@"
 WRAPPER_EOF
-chmod 755 "$CUPS_FILTER_DIR/brhl4150cdn-filter"
+chmod 755 "$CUPS_FILTER_DIR/brhl3040cn-filter"
 
 # Copy the actual filter script to the lib dir
-cp "$SCRIPT_DIR/brhl4150cdn-filter" "$LIB_DIR/brhl4150cdn-filter.py"
-chmod 644 "$LIB_DIR/brhl4150cdn-filter.py"
+cp "$SCRIPT_DIR/brhl3040cn-filter" "$LIB_DIR/brhl3040cn-filter.py"
+chmod 644 "$LIB_DIR/brhl3040cn-filter.py"
 
 # Precompile bytecode: the CUPS filter user cannot write __pycache__ here,
 # so without this every job recompiles all modules.
@@ -174,8 +174,8 @@ chmod 644 "$LIB_DIR/brhl4150cdn-filter.py"
 # Install PPD
 echo "Installing PPD to $CUPS_PPD_DIR..."
 mkdir -p "$CUPS_PPD_DIR"
-cp "$SCRIPT_DIR/brhl4150cdn.ppd" "$CUPS_PPD_DIR/brhl4150cdn.ppd"
-chmod 644 "$CUPS_PPD_DIR/brhl4150cdn.ppd"
+cp "$SCRIPT_DIR/brhl3040cn.ppd" "$CUPS_PPD_DIR/brhl3040cn.ppd"
+chmod 644 "$CUPS_PPD_DIR/brhl3040cn.ppd"
 
 echo ""
 echo "Installation complete!"
@@ -188,7 +188,7 @@ if $ADD_PRINTER; then
     # Auto-detect printer URI if not specified
     if [[ -z "$PRINTER_URI" ]]; then
         echo "  Searching for printer..."
-        DETECTED=$(lpinfo -v 2>/dev/null | grep -i "hl-4150" | head -1 | awk '{print $2}' || true)
+        DETECTED=$(lpinfo -v 2>/dev/null | grep -i "hl-3040" | head -1 | awk '{print $2}' || true)
         if [[ -n "$DETECTED" ]]; then
             PRINTER_URI="$DETECTED"
             echo "  Found: $PRINTER_URI"
@@ -197,25 +197,25 @@ if $ADD_PRINTER; then
             PRINTER_URI="socket://BRW.local:9100"
             echo "  Not auto-detected, using: $PRINTER_URI"
             echo "  You may need to update the URI with:"
-            echo "    lpadmin -p Brother_HL-4150CDN -v <actual-uri>"
+            echo "    lpadmin -p Brother_HL-3040CN -v <actual-uri>"
         fi
     fi
 
-    lpadmin -p Brother_HL-4150CDN \
+    lpadmin -p Brother_HL-3040CN \
         -E \
         -v "$PRINTER_URI" \
-        -P "$CUPS_PPD_DIR/brhl4150cdn.ppd" \
-        -D "Brother HL-4150CDN (Open Source)" \
+        -P "$CUPS_PPD_DIR/brhl3040cn.ppd" \
+        -D "Brother HL-3040CN (Open Source)" \
         -L "Network Printer"
 
-    echo "  Printer queue 'Brother_HL-4150CDN' created."
-    echo "  Test with: lp -d Brother_HL-4150CDN testpage.pdf"
+    echo "  Printer queue 'Brother_HL-3040CN' created."
+    echo "  Test with: lp -d Brother_HL-3040CN testpage.pdf"
 else
     echo "To add a printer queue, run:"
-    echo "  sudo lpadmin -p Brother_HL-4150CDN -E \\"
+    echo "  sudo lpadmin -p Brother_HL-3040CN -E \\"
     echo "    -v socket://YOUR_PRINTER_IP:9100 \\"
-    echo "    -P $CUPS_PPD_DIR/brhl4150cdn.ppd \\"
-    echo "    -D 'Brother HL-4150CDN (Open Source)'"
+    echo "    -P $CUPS_PPD_DIR/brhl3040cn.ppd \\"
+    echo "    -D 'Brother HL-3040CN (Open Source)'"
     echo ""
     echo "Or re-run this script with --add-printer:"
     echo "  sudo $0 --add-printer"

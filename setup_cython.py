@@ -10,7 +10,7 @@ from setuptools import Extension, setup
 _MODULES = ("_rle_fast", "_dither_fast", "_band_fast", "_color_fast", "_fine_fast")
 
 setup(
-    name="brother-hl4150cdn-cython",
+    name="brother-hl3040cn-cython",
     ext_modules=cythonize(
         [
             Extension(name, sources=[f"src/{name}.pyx"], extra_compile_args=["-O3", "-fno-strict-aliasing"])

@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# Uninstall the open-source Brother HL-4150CDN CUPS driver.
+# Uninstall the open-source Brother HL-3040CN CUPS driver.
 #
 set -euo pipefail
 
 # Installation paths
-LIB_DIR="/usr/local/lib/brhl4150cdn"
+LIB_DIR="/usr/local/lib/brhl3040cn"
 
 # CUPS paths (Linux; install.sh does not support macOS)
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -50,28 +50,28 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo "Uninstalling Brother HL-4150CDN open-source driver..."
+echo "Uninstalling Brother HL-3040CN open-source driver..."
 
 # Remove printer queue if requested
 if $REMOVE_PRINTER; then
-    if lpstat -p Brother_HL-4150CDN &>/dev/null; then
-        echo "Removing printer queue 'Brother_HL-4150CDN'..."
-        lpadmin -x Brother_HL-4150CDN
+    if lpstat -p Brother_HL-3040CN &>/dev/null; then
+        echo "Removing printer queue 'Brother_HL-3040CN'..."
+        lpadmin -x Brother_HL-3040CN
     else
-        echo "Printer queue 'Brother_HL-4150CDN' not found (skipping)."
+        echo "Printer queue 'Brother_HL-3040CN' not found (skipping)."
     fi
 fi
 
 # Remove CUPS filter
-if [[ -f "$CUPS_FILTER_DIR/brhl4150cdn-filter" ]]; then
+if [[ -f "$CUPS_FILTER_DIR/brhl3040cn-filter" ]]; then
     echo "Removing CUPS filter..."
-    rm -f "$CUPS_FILTER_DIR/brhl4150cdn-filter"
+    rm -f "$CUPS_FILTER_DIR/brhl3040cn-filter"
 fi
 
 # Remove PPD
-if [[ -f "$CUPS_PPD_DIR/brhl4150cdn.ppd" ]]; then
+if [[ -f "$CUPS_PPD_DIR/brhl3040cn.ppd" ]]; then
     echo "Removing PPD..."
-    rm -f "$CUPS_PPD_DIR/brhl4150cdn.ppd"
+    rm -f "$CUPS_PPD_DIR/brhl3040cn.ppd"
 fi
 
 # Remove library directory
@@ -84,10 +84,10 @@ echo ""
 echo "Uninstallation complete."
 
 if ! $REMOVE_PRINTER; then
-    if lpstat -p Brother_HL-4150CDN &>/dev/null; then
+    if lpstat -p Brother_HL-3040CN &>/dev/null; then
         echo ""
-        echo "Note: Printer queue 'Brother_HL-4150CDN' still exists."
+        echo "Note: Printer queue 'Brother_HL-3040CN' still exists."
         echo "To remove it, run: sudo $0 --remove-printer"
-        echo "Or manually: sudo lpadmin -x Brother_HL-4150CDN"
+        echo "Or manually: sudo lpadmin -x Brother_HL-3040CN"
     fi
 fi

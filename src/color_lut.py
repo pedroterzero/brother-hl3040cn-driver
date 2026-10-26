@@ -1,7 +1,7 @@
-"""3D colour LUT interpolation for the Brother HL-4150CDN.
+"""3D colour LUT interpolation for the Brother HL-3040CN.
 
 Maps RGB input to CMYK ink values via a 17x17x17 grid plus tetrahedral
-interpolation tables. Which of the 18 grids applies is decided like
+interpolation tables. Which of the 12 grids applies is decided like
 `lookup_color_transform_table` in the original driver (see `ColorTable`).
 """
 
@@ -9,13 +9,14 @@ import functools
 import hashlib
 import logging
 import time
-from collections.abc import Buffer
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
+
+from _compat import Buffer
 
 try:
     from _color_fast import gather_kcmy, interp_kcmy  # type: ignore[import-not-found]
@@ -49,7 +50,7 @@ _CORNER_OFFSETS = np.array([0, 17, 1, 18, 289, 306, 290, 307], dtype=np.int32)
 
 
 Profile = Literal["rgb", "srgb", "cmyk"]
-Variant = Literal["default", "density2", "glossy"]
+Variant = Literal["default", "fine"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,8 @@ class ColorTable:
         profile: `rgb` for Normal colour matching, `srgb` for Vivid, `cmyk`
             for colour matching None.
         improve_gray: the ImpGray=ON grids (BRGray).
-        variant: `density2` with toner save, `glossy` for glossy media.
+        variant: `fine` for Fine resolution (the CAPT grids), else `default`.
+            The HL-3040CN has no toner-save or glossy grids.
         rich_black: pure black takes grid entry 0 (C, M, Y and K) instead of
             K only; the original does this with BREnhanceBlkPrt in the
             rgb/srgb profiles (`lut_selection` 0 in `load_color_profile`).
@@ -73,7 +75,7 @@ class ColorTable:
 
     @property
     def name(self) -> str:
-        """Blob name stem, e.g. `rgb_ig_density2` for `rgb_ig_density2_lut.bin`."""
+        """Blob name stem, e.g. `rgb_ig_fine` for `rgb_ig_fine_lut.bin`."""
         return f"{self.profile}{'_ig' if self.improve_gray else ''}_{self.variant}"
 
 
@@ -98,8 +100,8 @@ def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
     to avoid packed arithmetic and int64 at runtime.
 
     Falls back to parametric generation if the binary file is missing: the
-    generated rgb/srgb default grids stand in for every variant (with a
-    warning, since the output then differs from the original's).
+    generated rgb/srgb grids stand in for every variant (with a warning,
+    since the output then differs from the original's).
 
     Returns:
         Unpacked LUT of shape (_LUT_ENTRIES, 4), columns [C, M, Y, K].
@@ -111,10 +113,9 @@ def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
     if not path.exists():
         from color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
 
-        if table.name not in ("rgb_default", "srgb_default"):
-            logger.warning("LUT binary %s missing (run scripts/extract_blobs.sh); using a generated grid", path.name)
-        else:
-            logger.info("LUT binary %s not found, generating from parametric model", path.name)
+        # The generated grids approximate the HL-4150CDN defaults (see
+        # color_lut_gen), so they stand in for every HL-3040CN grid with a warning.
+        logger.warning("LUT binary %s missing (run scripts/extract_blobs.sh); using a generated grid", path.name)
         return generate_srgb_default_lut() if table.profile == "srgb" else generate_rgb_default_lut()
     data = path.read_bytes()
     if len(data) != _LUT_BYTES:

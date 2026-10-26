@@ -94,7 +94,7 @@ def encode_m_plane_10(data: bytes) -> bytes:
     """Encode M-plane data using 10-bit sliding-window RLE.
 
     Uses a 5-word context window for context-skip prediction. Total
-    groups = ceil(total_bits / 10) = 477 for the standard BPL=596.
+    groups = ceil(total_bits / 10) = 496 for the A4 BPL=620.
 
     Returns:
         Compressed bytes, empty if the line is all-zero.

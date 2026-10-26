@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# extract_blobs.sh - Pull Brother HL-4150CDN calibration tables into src/.
+# extract_blobs.sh - Pull Brother HL-3040CN calibration tables into src/.
 #
-# The driver needs the printer's calibration tables (colour LUTs and dither
-# tables) to drive the hardware. Those tables ship inside the official
-# Brother LPR driver and are not redistributed here — this script downloads the
-# `.deb`, verifies its MD5, and copies the tables into src/lut/ and
-# src/color_data/. Both directories are gitignored.
+# The driver needs the printer's calibration tables (colour LUTs, dither
+# tables and the mono tone curve) to drive the hardware. Those tables ship
+# inside the official Brother LPR driver and are not redistributed here —
+# this script downloads the `.deb`, verifies its MD5, and copies the tables
+# into src/lut/ and src/color_data/. Both directories are gitignored.
 #
 # Usage:  ./scripts/extract_blobs.sh
 #         (re-runs are idempotent; use --force to redownload)
@@ -17,43 +17,40 @@ LUT_DIR="$REPO_DIR/src/lut"
 COLOR_DATA_DIR="$REPO_DIR/src/color_data"
 WORK_DIR="$REPO_DIR/.brother-blobs"
 
-DEB_URL="https://download.brother.com/welcome/dlf005940/hl4150cdnlpr-1.1.1-5.i386.deb"
-DEB_FILE="$WORK_DIR/hl4150cdnlpr-1.1.1-5.i386.deb"
-DEB_MD5="dd803993d4a29a432d63141201821b82"
+DEB_URL="https://download.brother.com/pub/com/linux/linux/packages/hl3040cnlpr-1.1.2-1.i386.deb"
+DEB_FILE="$WORK_DIR/hl3040cnlpr-1.1.2-1.i386.deb"
+DEB_MD5="ea5f589085fe7c99e655b9088f5933e5"
 
-FILTER_BIN_PATH="usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
-LUT_PATH_IN_DEB="usr/local/Brother/Printer/hl4150cdn/inf/lut"
+FILTER_BIN_PATH="opt/brother/Printers/hl3040cn/lpd/brhl3040cnfilter"
+LUT_PATH_IN_DEB="opt/brother/Printers/hl3040cn/inf/lut"
 
-# Single-blob offsets in brhl4150cdnfilter (verified against driver version 1.1.1-5).
+# Single-blob offsets in brhl3040cnfilter (driver version 1.1.2-1).
 # name=offset:size
 # Colour LUTs are named <profile>[_ig]_<variant>_lut.bin after the tables
-# `lookup_color_transform_table` picks from: profile rgb (Normal), srgb
-# (Vivid) or cmyk (colour matching None); _ig for BRGray=ON; variant density2
-# (toner save), glossy (glossy media) or default.
+# the colour-table selector (0x0804a7d4) picks from: profile rgb (Normal,
+# "Match Monitor"), srgb (Vivid) or cmyk (colour matching None); _ig for
+# BRGray=ON; variant fine (the CAPT grids, BRResolution=Fine) or default.
+# Each payload follows a 32-byte record header and the table's name string.
+# mono_curve.bin is the 256-entry K curve of the grayscale path.
 BIN_BLOBS=(
-  "rgb_default_lut.bin=0x92d58:39304"
-  "rgb_density2_lut.bin=0xafb18:39304"
-  "rgb_glossy_lut.bin=0xa6138:39304"
-  "rgb_ig_default_lut.bin=0xf3057:39304"
-  "rgb_ig_density2_lut.bin=0x10fe17:39304"
-  "rgb_ig_glossy_lut.bin=0x106437:39304"
-  "srgb_default_lut.bin=0xc2ed7:39304"
-  "srgb_density2_lut.bin=0xdfc77:39304"
-  "srgb_glossy_lut.bin=0xd6297:39304"
-  "srgb_ig_default_lut.bin=0x1231d6:39304"
-  "srgb_ig_density2_lut.bin=0x13ff76:39304"
-  "srgb_ig_glossy_lut.bin=0x136596:39304"
-  "cmyk_default_lut.bin=0x32543:39304"
-  "cmyk_density2_lut.bin=0x4f343:39304"
-  "cmyk_glossy_lut.bin=0x45943:39304"
-  "cmyk_ig_default_lut.bin=0x62742:39304"
-  "cmyk_ig_density2_lut.bin=0x7f542:39304"
-  "cmyk_ig_glossy_lut.bin=0x75b42:39304"
+  "rgb_default_lut.bin=0x6e0bf:39304"
+  "rgb_fine_lut.bin=0x646bd:39304"
+  "rgb_ig_default_lut.bin=0xa7c5e:39304"
+  "rgb_ig_fine_lut.bin=0x9e25c:39304"
+  "srgb_default_lut.bin=0x8ae97:39304"
+  "srgb_fine_lut.bin=0x814b5:39304"
+  "srgb_ig_default_lut.bin=0xc4a36:39304"
+  "srgb_ig_fine_lut.bin=0xbb054:39304"
+  "cmyk_default_lut.bin=0x33f43:39304"
+  "cmyk_fine_lut.bin=0x2a541:39304"
+  "cmyk_ig_default_lut.bin=0x50d42:39304"
+  "cmyk_ig_fine_lut.bin=0x47340:39304"
+  "mono_curve.bin=0x6413d:256"
 )
 
 # interp_tables.bin is 17 sub-tables (17×17×9 = 2601 bytes each) stored at a
 # 0xA40 (2624-byte) stride in the binary — extract and concatenate them.
-INTERP_BASE_OFFSET=0x1bde0
+INTERP_BASE_OFFSET=0x1dce0
 INTERP_SUB_SIZE=2601
 INTERP_SUB_STRIDE=0xa40
 INTERP_SUB_COUNT=17
@@ -87,7 +84,7 @@ if [[ "$actual_md5" != "$DEB_MD5" ]]; then
     echo "ERROR: MD5 mismatch on $DEB_FILE" >&2
     echo "  expected $DEB_MD5"     >&2
     echo "  got      $actual_md5"  >&2
-    echo "Refusing to extract — the offsets in this script were computed against the official 1.1.1-5 build." >&2
+    echo "Refusing to extract — the offsets in this script were computed against the official 1.1.2-1 build." >&2
     exit 1
 fi
 echo "[2/4] MD5 OK ($DEB_MD5)"

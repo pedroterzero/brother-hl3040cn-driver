@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""brfilter.py - PPM → PJL + XL2HB filter for the Brother HL-4150CDN.
+"""brfilter.py - PPM → PJL + XL2HB filter for the Brother HL-3040CN.
 
 Convenience facade over the pipeline, settings and PPM modules, used by
 the tests. Run as a script to invoke the CLI (`python src/brfilter.py`).
@@ -11,7 +11,6 @@ from pipeline import filter_page, filter_pages
 from ppm import read_ppm
 from settings import (
     ColorMatching,
-    DuplexMode,
     ImproveOutput,
     InputSlot,
     MediaType,
@@ -23,7 +22,6 @@ from settings import (
 
 __all__ = [
     "ColorMatching",
-    "DuplexMode",
     "ImproveOutput",
     "InputSlot",
     "MediaType",

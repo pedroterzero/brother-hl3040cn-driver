@@ -1,4 +1,4 @@
-"""Brother HL-4150CDN XL2HB raster encoder.
+"""Brother HL-3040CN XL2HB raster encoder.
 
 Plane-specific RLE codecs (each scanline is encoded into its own block):
   C: 20-bit sliding-window RLE, 3-word context, header QUANT type=2 comp=20

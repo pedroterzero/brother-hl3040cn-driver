@@ -5,17 +5,17 @@
   per-channel input remap.
 * :func:`color_table` picks the colour grid the original driver would use
   for the settings; :func:`color_lut.rgb_to_cmyk_lut_arr` separates RGB
-  into CMYK through it. Colour matching, BRGray, toner save, glossy media and
+  into CMYK through it. Colour matching, BRGray, resolution and
   BREnhanceBlkPrt only choose the grid; they do not touch the pixels.
+  Toner save only changes the dither tables on the HL-3040CN.
 """
-
-from collections.abc import Buffer
 
 import numpy as np
 import numpy.typing as npt
 
+from _compat import Buffer
 from color_lut import ColorTable, Profile, Variant
-from settings import ColorMatching, MediaType, PrintSettings
+from settings import ColorMatching, PrintSettings, Resolution
 
 _NDArrayU8 = npt.NDArray[np.uint8]
 
@@ -29,18 +29,14 @@ _PROFILES: dict[ColorMatching, Profile] = {
 def color_table(settings: PrintSettings) -> ColorTable:
     """The colour grid `lookup_color_transform_table` selects for `settings`.
 
-    Toner save wins over glossy media, as in the original. Rich black
-    (BREnhanceBlkPrt) only exists for the rgb and srgb profiles.
+    Fine resolution takes the CAPT grids. Rich black (BREnhanceBlkPrt)
+    only exists for the rgb and srgb profiles.
 
     Returns:
         The table for the colour separation.
     """
     profile = _PROFILES[settings.color_matching]
-    variant: Variant = "default"
-    if settings.toner_save:
-        variant = "density2"
-    elif settings.media_type == MediaType.GLOSSY:
-        variant = "glossy"
+    variant: Variant = "fine" if settings.resolution == Resolution.FINE else "default"
     return ColorTable(
         profile=profile,
         improve_gray=settings.improve_gray,

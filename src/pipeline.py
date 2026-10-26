@@ -1,8 +1,7 @@
 """End-to-end PPM → XL2HB pipeline.
 
 `filter_page` is the single-page entry point. `filter_pages` renders a
-whole job (simplex or duplex) inside one XL2HB session, as the
-manufacturer's filter does.
+whole job inside one XL2HB session, as the manufacturer's filter does.
 """
 
 import contextlib
@@ -10,7 +9,7 @@ import io
 import logging
 import os
 from collections import deque
-from collections.abc import Buffer, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import cache, partial
 from pathlib import Path
@@ -20,13 +19,12 @@ import numpy as np
 import numpy.typing as npt
 
 import color_lut
+from _compat import Buffer
 from brother_encode import encode_c_plane, encode_fine_plane, encode_m_plane_10, encode_plane
 from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_arr, load_dither_tables
 from saturation import adjust_saturation
 from settings import (
-    DUPLEX_MAP,
     MEDIA_SOURCE,
-    DuplexMode,
     ImproveOutput,
     MonoColor,
     PrintSettings,
@@ -115,7 +113,7 @@ def collect_rows(pixel_data: PageData, width: int, height: int) -> npt.NDArray[n
 
     A view for packed bytes and arrays; streamed row blocks are copied into
     a single page-sized buffer. Only needed where the whole page must be
-    seen at once (long-edge back pages, skip-blank).
+    seen at once (pages sent bottom-up for BRReverse).
 
     Returns:
         uint8 array whose rows are contiguous RGB scanlines.
@@ -161,15 +159,6 @@ def _iter_rows(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], bool]
         yield from zip(block, _white_rows(block).tolist(), strict=True)
 
 
-def is_blank_page(pixel_data: PageBuffer) -> bool:
-    """Return True if every byte of the page is 255 (pure white).
-
-    Works on packed bytes and on strided array views without copying.
-    """
-    arr = pixel_data if isinstance(pixel_data, np.ndarray) else np.frombuffer(pixel_data, dtype=np.uint8)
-    return arr.size == 0 or int(arr.min()) == 255
-
-
 def chain_peeked(
     first: tuple[int, int, PageData], rest: Iterator[tuple[int, int, PageData]]
 ) -> Iterator[tuple[int, int, PageData]]:
@@ -188,33 +177,11 @@ def chain_peeked(
     yield from rest
 
 
-def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tuple[int, int, PageBuffer]]:
-    """Skip the pure-white pages of a job (BRSkipBlank).
-
-    Brother's filter drops them before sides are assigned, in simplex and
-    duplex alike: the next page takes the blank one's place (verified
-    against captures). Each page is collected into one buffer to be tested.
-
-    Yields:
-        The pages that are not blank, as whole-page buffers.
-    """
-    for width, height, data in pages:
-        rows = collect_rows(data, width, height)
-        # `rows` may be a view of `data`; drop both, blank or not, before
-        # the next page is collected, so that only one whole page is held.
-        del data
-        if is_blank_page(rows):
-            logger.info("skipping blank page")
-        else:
-            yield width, height, rows
-        del rows
-
-
 def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.uint8]:
     """Mirror page rows top-to-bottom over the full paper height.
 
-    Brother's filter sends long-edge duplex back pages this way (verified
-    byte-for-byte against captures of brhl4150cdnfilter). Rows missing below
+    Brother's filter sends every page of a BRReverse job this way (verified
+    byte-for-byte against captures of brhl3040cnfilter). Rows missing below
     a short page become white rows at the top of the flipped page.
 
     Returns:
@@ -374,6 +341,32 @@ def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
     return ((px[..., 0] * 299 + px[..., 1] * 587 + px[..., 2] * 114 + 499) // 1000).astype(np.uint8)
 
 
+@cache
+def _mono_levels() -> npt.NDArray[np.uint8]:
+    """Map luma to the gray level the K dither sees, through the mono curve.
+
+    The original sets K ink to `curve[255 - luma]`; the dither functions take
+    gray levels (ink = 255 - level), so the map is `255 - curve[255 - luma]`.
+    Without the extracted curve (`color_data/mono_curve.bin`) K ink is
+    255 - luma (the identity profile of the HL-4150CDN filter).
+
+    Returns:
+        256-entry uint8 map from luma to the K plane's gray level.
+
+    Raises:
+        ValueError: If the curve file is not 256 bytes.
+    """
+    path = Path(__file__).resolve().parent / "color_data" / "mono_curve.bin"
+    if not path.exists():
+        logger.warning("Mono curve %s missing (run scripts/extract_blobs.sh); using the identity", path.name)
+        return np.arange(256, dtype=np.uint8)
+    curve = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    if curve.size != 256:
+        msg = f"mono curve size {curve.size}, expected 256"
+        raise ValueError(msg)
+    return (255 - curve[255 - np.arange(256)]).astype(np.uint8)
+
+
 def _encode_lines_mono(
     blocks: RowBlocks,
     width: int,
@@ -386,9 +379,9 @@ def _encode_lines_mono(
     """Grayscale counterpart of `_encode_lines`: luma into the K plane only.
 
     Mirrors `compress_separate_mono` in the original driver: K ink is
-    255 - luma through the mono profile, which is the identity table, and
-    C/M/Y stay empty. Saturation and vivid do not apply in this mode; the
-    brightness/contrast input remap does.
+    `curve[255 - luma]` through the HL-3040CN mono curve (`_mono_levels`),
+    and C/M/Y stay empty. Saturation and vivid do not apply in this mode;
+    the brightness/contrast input remap does.
 
     Yields:
         Encoded planes of each input row, top to bottom.
@@ -406,7 +399,7 @@ def _encode_lines_mono(
             rgb = _page_rows(
                 apply_input_remap_rgb(np.ascontiguousarray(block), n * width, *colour.input_remap), width, n
             )
-        luma = _luma(rgb, width)
+        luma = _mono_levels()[_luma(rgb, width)]
         if pad_arr is not None:
             luma = np.concatenate((luma, np.broadcast_to(pad_arr, (n, pad_arr.size))), axis=1)
         for row, is_white in zip(luma, white, strict=True):
@@ -457,27 +450,27 @@ def _band_kernel_colour(
 def _render_threads() -> int:
     """Number of band render threads.
 
-    `BRHL4150CDN_RENDER_THREADS` overrides the default of one thread per
+    `BRHL3040CN_RENDER_THREADS` overrides the default of one thread per
     spare core, at most three; 0 renders on the calling thread.
 
     Returns:
         Thread count, >= 0.
     """
     default = max(1, min(3, (os.cpu_count() or 1) - 1))
-    configured = os.environ.get("BRHL4150CDN_RENDER_THREADS")
+    configured = os.environ.get("BRHL3040CN_RENDER_THREADS")
     if configured is None:
         return default
     try:
         return max(0, int(configured))
     except ValueError:
-        logger.warning("ignoring non-numeric BRHL4150CDN_RENDER_THREADS=%r, using %d threads", configured, default)
+        logger.warning("ignoring non-numeric BRHL3040CN_RENDER_THREADS=%r, using %d threads", configured, default)
         return default
 
 
 @cache
 def _band_executor(workers: int) -> ThreadPoolExecutor:
     """Return the process-wide pool of `workers` render threads."""
-    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brhl4150cdn-band")
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brhl3040cn-band")
 
 
 def _split_bands(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], int]]:
@@ -565,15 +558,13 @@ def _render_page(
     pixel_data: PageData,
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
-    *,
-    back_side: bool = False,
 ) -> None:
     """Render one page within an already-open session.
 
-    Handles: BeginPage -> scanline loop -> flush -> EndPage. `back_side`
-    marks the second page of a duplex sheet. Scanlines are read as views
-    into `pixel_data`, which may also be a stream of row blocks; only
-    flipped pages are collected into one buffer to be mirrored.
+    Handles: BeginPage -> scanline loop -> flush -> EndPage. Scanlines are
+    read as views into `pixel_data`, which may also be a stream of row
+    blocks; only flipped (BRReverse) pages are collected into one buffer
+    to be mirrored.
 
     Raises:
         ValueError: If `pixel_data` has fewer than `height` rows.
@@ -589,11 +580,11 @@ def _render_page(
         sw, sh = get_image_dimensions(page_size)
         bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
 
-    # Long-edge back pages are sent bottom-up (rows mirrored, columns not)
-    # with the back-side marker. BRReverse makes Brother's filter send every
-    # page that way, so on a long-edge back page the two cancel out
-    # (verified against captures).
-    flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    # HL-3040CN: BRReverse (rotate 180 degrees) makes Brother's filter send
+    # every page bottom-up (rows mirrored, columns not) with the marker the
+    # duplex models use for long-edge back pages. This model has no duplex,
+    # so nothing else flips a page (verified against captures).
+    flip = settings.reverse
     if flip:
         blocks: RowBlocks = (_flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
         height = paper_h
@@ -606,12 +597,11 @@ def _render_page(
         media_size=page_size,
         media_source=MEDIA_SOURCE[settings.input_slot],
         media_type=settings.media_type,
-        duplex_mode=DUPLEX_MAP.get(settings.duplex),
         back_side_marker=flip,
     )
     w.write_set_page_origin()
     mono = settings.mono_color == MonoColor.MONO
-    w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine, color=not mono)
+    w.write_begin_image(sw, sh, copies=page_copies(settings), fine=is_fine, color=not mono)
 
     plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
 
@@ -680,7 +670,30 @@ def _render_page(
         write_plane(pid)
 
     w.write_end_image()
-    w.write_end_page(copies=settings.copies)
+    w.write_end_page(copies=page_copies(settings))
+
+
+def page_copies(settings: PrintSettings) -> int:
+    """PageCopies of every page, as brhl3040cnfilter writes it.
+
+    Returns:
+        1 when collating, else the rc Copies value (Brother's rc default is 0).
+    """
+    return 1 if settings.collate else settings.copies
+
+
+def page_repeats(settings: PrintSettings) -> int:
+    """How often each page is sent: Copies times without collation, else once.
+
+    brhl3040cnfilter repeats every page Copies times when Collate is OFF
+    (each still carrying PageCopies=Copies) and sends it once with
+    PageCopies=1 when Collate is ON. The CUPS filter always renders one
+    copy (the PPD sets cupsManualCopies).
+
+    Returns:
+        Number of times each page is sent, >= 1.
+    """
+    return settings.copies if not settings.collate and settings.copies > 1 else 1
 
 
 def _init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
@@ -709,9 +722,6 @@ def filter_page(
     output: BinaryIO,
 ) -> None:
     """Convert PPM pixel data to XL2HB and write to output."""
-    if settings.skip_blank and is_blank_page(pixel_data):
-        return
-
     filter_pages([(width, height, pixel_data)], settings, output)
 
     _, paper_h = PAPER_SIZES[settings.page_size]
@@ -724,37 +734,25 @@ def _render_pages(
     channels: dict[str, DitherChannel],
     output: BinaryIO,
 ) -> None:
-    """Render pages in input order; with duplex every second page is a back side.
+    """Render pages in input order, each `page_repeats` times.
 
     Each page is rendered into memory (its compressed XL2HB, typically
     well under 10 MB) and written to `output` only once it is complete, so
     a failure while reading or rendering a page never leaves a half page
-    in the printer data stream.
+    in the printer data stream. Repeated copies of a page are the same
+    bytes, so the page is rendered once and written again.
     """
-    duplex = settings.duplex != DuplexMode.NONE
+    repeats = page_repeats(settings)
     page_buf = io.BytesIO()
-    # A counter instead of enumerate(): enumerate keeps the last (index,
-    # page) pair until the next page has been read, which would hold two
-    # whole-page buffers at once.
-    index = 0
     for width, height, pixel_data in pages:
         page_buf.seek(0)
         page_buf.truncate()
-        _render_page(
-            XL2HBWriter(page_buf),
-            width,
-            height,
-            pixel_data,
-            settings,
-            channels,
-            back_side=duplex and index % 2 == 1,
-        )
+        _render_page(XL2HBWriter(page_buf), width, height, pixel_data, settings, channels)
         # Release the page's raster before the next page is read; with
-        # whole-page buffers (skip blank, flipped pages) two would add up.
+        # whole-page buffers (flipped pages) two would add up.
         del pixel_data
         with page_buf.getbuffer() as page:
-            output.write(page)
-        index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
+            output.writelines(page for _ in range(repeats))
 
 
 def filter_pages(
@@ -764,10 +762,10 @@ def filter_pages(
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
-    Pages are consumed lazily in input order; with duplex, every second
-    page is a back side. `settings.reverse` keeps the page order and sends
-    each page bottom-up with the back-side marker, as Brother's filter does.
-    `settings.skip_blank` drops pure-white pages before sides are assigned.
+    Pages are consumed lazily in input order. `settings.reverse` keeps the
+    page order and sends each page bottom-up with the back-side marker, as
+    Brother's filter does. Without Collate every page is sent `Copies`
+    times (`page_repeats`).
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
@@ -778,10 +776,6 @@ def filter_pages(
         settings: PrintSettings of the job
         output: writable binary stream
     """
-    if settings.skip_blank:
-        # Idempotent: callers that drop blanks first to detect an empty job
-        # hand over whole-page buffers, which are only viewed again here.
-        pages = drop_blank_pages(pages)
     # PJL header always reports 600 dpi; Fine mode differs only in dithering.
     color = settings.mono_color != MonoColor.MONO
     pjl = generate_pjl_header(
@@ -790,7 +784,7 @@ def filter_pages(
         # Only BRMonoColor=Auto sets the colour-adapt flag (printer_config_init).
         color_adapt=settings.mono_color == MonoColor.AUTO,
         # ECONOMODE is always OFF; toner-save is implemented through the
-        # -TS_cache09.bin dither tables instead.
+        # -TS_cache08.bin dither tables instead.
         economode=False,
         less_paper_curl=settings.improve_output == ImproveOutput.LESS_PAPER_CURL,
         fix_intensity=settings.improve_output == ImproveOutput.FIX_INTENSITY,
