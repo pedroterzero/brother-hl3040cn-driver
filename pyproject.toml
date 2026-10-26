@@ -1,25 +1,32 @@
 [project]
-name = "brother-hl4150cdn-driver"
-version = "1.1.1"
-description = "Open-source driver replacement for the Brother HL-4150CDN color laser printer (XL2HB protocol, CUPS integration)"
+name = "brother-hl3040cn-driver"
+version = "0.1.0"
+description = "Open-source driver replacement for the Brother HL-3040CN color laser printer (XL2HB protocol, CUPS integration); a fork of brother-hl4150cdn-driver"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-authors = [{ name = "Claas Flint", email = "claas.flint@akator.de" }]
-keywords = ["brother", "hl4150cdn", "cups", "printer-driver", "xl2hb", "pcl-xl"]
+authors = [
+    { name = "Claas Flint" },  # brother-hl4150cdn-driver, which this fork is based on
+    { name = "pedroterzero", email = "72469659+pedroterzero@users.noreply.github.com" },  # HL-3040CN port
+]
+keywords = ["brother", "hl3040cn", "cups", "printer-driver", "xl2hb", "pcl-xl"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Printing",
     "Topic :: System :: Hardware :: Hardware Drivers",
 ]
 dependencies = [
-    "numpy>=2.5.3",
+    # NumPy 2.4 is the last series for Python 3.11 (Debian 12, Raspberry Pi OS).
+    "numpy>=2.5.3; python_version >= '3.12'",
+    "numpy>=2.4.6; python_version < '3.12'",
 ]
 
 [project.optional-dependencies]
@@ -31,11 +38,11 @@ testpaths = ["tests"]
 pythonpath = ["src", "tests"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py311"
 line-length = 120
 src = ["src", "tests"]
 # The CUPS filter is a Python script without the .py extension.
-extend-include = ["cups/brhl4150cdn-filter"]
+extend-include = ["cups/brhl3040cn-filter"]
 
 [tool.ruff.lint]
 preview = true   # required for DOC (pydoclint) rules
@@ -157,12 +164,11 @@ known_first_party = [
     "rle", "saturation", "settings", "transforms", "xl2hb",
     # Optional Cython modules built by setup_cython.py (pure-Python fallback).
     "_band_fast", "_color_fast", "_dither_fast", "_fine_fast", "_rle_fast",
-    # Test helpers and harness scripts the RE scripts import from tests/ and scripts/.
-    "brother_decode", "extract_fixtures", "fine_diff",
+    # Test helpers the tests and scripts/fine_diff.py import from tests/.
+    "brother_decode", "capture_pages", "extract_fixtures", "fixture_utils",
+    # Compatibility shim for Python 3.11.
+    "_compat",
 ]
-# RE scripts only: unicorn comes in via `uv run --with unicorn`, and `gdb` is
-# the module of gdb's embedded Python (scripts/trace_dither_gdb.py).
-per_rule_ignores = { DEP001 = ["unicorn", "gdb"] }
 # Treat the `test` and `dev` extras as dev groups so their entries
 # (pytest, ruff, ...) are not required to be imported from main code.
 optional_dependencies_dev_groups = ["test", "dev"]
@@ -171,9 +177,9 @@ optional_dependencies_dev_groups = ["test", "dev"]
 extend_exclude = ["noxfile\\.py", "setup_cython\\.py"]
 
 [tool.pyrefly]
-python-version = "3.13"
+python-version = "3.13"  # typeshed of the newest Python; 3.11 is covered by the tests
 search-path = ["src", "tests"]
-project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py", "cups/brhl4150cdn-filter"]
+project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py", "cups/brhl3040cn-filter"]
 project-excludes = [".venv/**", ".nox/**", "__pycache__/**"]
 untyped-def-behavior = "check-and-infer-return-type"
 strict-callable-subtyping = true

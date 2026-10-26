@@ -9,8 +9,8 @@ import nox
 nox.options.default_venv_backend = "uv"
 
 PYTHON = "3.13"
-SOURCES = ["src", "tests", "scripts", "noxfile.py", "setup_cython.py", "cups/brhl4150cdn-filter"]
-TYPECHECK_SOURCES = ["src", "tests", "noxfile.py", "cups/brhl4150cdn-filter"]
+SOURCES = ["src", "tests", "scripts", "noxfile.py", "setup_cython.py", "cups/brhl3040cn-filter"]
+TYPECHECK_SOURCES = ["src", "tests", "noxfile.py", "cups/brhl3040cn-filter"]
 
 
 @nox.session(python=PYTHON)
@@ -49,8 +49,8 @@ def deps(session: nox.Session) -> None:
     session.run("deptry", ".")
 
 
-@nox.session(python=PYTHON)
+@nox.session(python=["3.11", "3.13"])
 def tests(session: nox.Session) -> None:
-    """Run the test suite."""
+    """Run the test suite on the oldest supported Python (Debian 12) and the newest."""
     session.install(".[test]")
     session.run("pytest", *session.posargs)

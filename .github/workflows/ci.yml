@@ -33,17 +33,19 @@ jobs:
   tests:
     # Both variants run the byte-identity suite: "cython" covers the native
     # modules, "pure-python" the fallbacks used when no compiler is available.
-    name: pytest (${{ matrix.variant }}, with Brother blobs)
+    # Python 3.11 is what Debian 12 and Raspberry Pi OS ship.
+    name: pytest (Python ${{ matrix.python }}, ${{ matrix.variant }}, with Brother blobs)
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
+        python: ["3.11", "3.13"]
         variant: [cython, pure-python]
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
           enable-cache: true
       - name: Install test extras
         run: uv sync --extra test

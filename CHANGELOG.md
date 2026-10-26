@@ -4,7 +4,56 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — Brother HL-3040CN fork
+
+This repository is a fork of
+[cl445/brother-hl4150cdn-driver](https://github.com/cl445/brother-hl4150cdn-driver)
+for the Brother HL-3040CN, based on its main branch after 1.1.1 (2de1a33).
+The sections below this one are upstream's history, for the HL-4150CDN.
+
+### Changed
+- The driver targets the HL-3040CN. All 99 reference captures of
+  Brother's `brhl3040cnfilter` 1.1.2-1 (Normal and Fine, all 22 paper
+  sizes, every colour setting, grayscale, media types, paper sources,
+  copies, reverse print, multi-page jobs) are byte-identical, apart from
+  the PJL job time, with and without the Cython modules.
+- PJL job block (`JOB NAME`, `PRINTLOG` items 1-4 with the UTC job time,
+  `STRINGCODESET`, `LOGINUSER`) and `@PJL EOJ` trailer, as the
+  HL-3040CN filter writes them.
+- Page geometry from the HL-3040CN paper table, which is the whole sheet:
+  `SetPageOrigin` (0,0), width rounded up to 32 pixels (Fine: 8), height
+  `h * 72 // 600 * 600 // 72`. The CUPS filter has Ghostscript render
+  the whole sheet at that size. A5 long edge and JIS B6 are sent as
+  custom media sizes; A4 Long is new.
+- Colour grids, interpolation tables, dither screens (`_cache08`) and
+  the grayscale tone curve come from the HL-3040CN package
+  (`scripts/extract_blobs.sh`). Fine uses the CAPT grids; toner save
+  changes only the dither screens.
+- Paper sources Auto, Tray 1 and Manual. Copies and Collate as the
+  HL-3040CN filter handles them in the rc file; the CUPS queue lets CUPS
+  make the copies (`cupsManualCopies`).
+- Reverse print turns every page by 180 degrees in the original page
+  order, with the page marker the HL-3040CN filter sends.
+- rc files use Brother's HL-3040CN spellings (`Color`, `PostCard`); an
+  unknown `BRMonoColor` value means Auto, as in Brother's filter.
+- The PPD and the CUPS filter offer Fine mode.
+- Runs on Python 3.11 (Debian 12, Raspberry Pi OS); CI tests 3.11 and
+  3.13.
+- Names: package `brother-hl3040cn-driver`, CUPS filter
+  `brhl3040cn-filter`, PPD `brhl3040cn.ppd`, queue `Brother_HL-3040CN`,
+  environment variable `BRHL3040CN_RENDER_THREADS`.
+- The tests check every reference capture byte for byte
+  (`tests/test_captures.py`); the HL-4150CDN captures are gone.
+- `scripts/fine_diff.py` runs `brhl3040cnfilter`.
+
+### Removed
+- Duplex, glossy media, Tray 2, the MP tray and skip blank, which the
+  HL-3040CN does not have.
+- `scripts/native_codec.py` and `scripts/trace_dither*.py`, which work on
+  the HL-4150CDN binary.
+- `uv.lock`; run `uv lock` to create one.
+
+## Upstream changes after 1.1.1 (cl445/brother-hl4150cdn-driver 2de1a33)
 
 ### Fixed
 - Reverse print (`BRReverse=ON`) keeps the page order and sends every page
@@ -264,7 +313,7 @@ Normal mode (600 dpi).
 - Fine mode emits valid framing but its compression codec is not yet
   byte-identical with the manufacturer's filter.
 
-[Unreleased]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/pedroterzero/brother-hl3040cn-driver/commits/main
 [1.1.1]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/cl445/brother-hl4150cdn-driver/releases/tag/v1.0.0
